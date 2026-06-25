@@ -81,6 +81,10 @@
   <!-- planner grid cell size (m). 0.10 = 4x fewer cells than the 0.05 map ->
        much faster A* on a big map; fine since VFH+ does the fine avoidance. -->
   <arg name="plan_resolution" default="0.10"/>
+  <!-- global-path wall clearance (m). Lower (0.30-0.35) if the rough map's
+       inflated walls/noise close passages so the planner can't route. Keep
+       >= robot half-width (~0.30) for safety. -->
+  <arg name="inflate_radius" default="0.45"/>
   <!-- controller: distance (m) where avoidance fully takes over / e-brakes.
        raise (e.g. 0.7) to react to obstacles earlier and not clip them. -->
   <arg name="d_danger" default="0.55"/>
@@ -155,7 +159,7 @@
     <!-- MUST match VFH clearance (robot_radius+safety_margin = 0.33+0.10 =
          0.43). Larger (0.50) was tested and BLOCKS the map's doorways ->
          robot can't reach goals. 0.45 is the tuned value. -->
-    <param name="inflate_radius"     value="0.45"/>
+    <param name="inflate_radius"     value="$(arg inflate_radius)"/>
     <param name="plan_resolution"    value="$(arg plan_resolution)"/>
     <param name="replan_period"      value="1.0"/>
     <param name="heuristic_weight"   value="1.2"/>
