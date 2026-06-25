@@ -16,4 +16,5 @@ echo " 3) When it looks like the room, in ANOTHER terminal run:"
 echo "      bash ~/amr_source/save_map.sh myroom"
 echo "=================================================================="
 echo ""
-roslaunch amr_bringup amr_mapping.launch
+# full path (not the package name) so a stale workspace can't shadow it
+roslaunch "$DIR/amr_bringup/launch/amr_mapping.launch"
