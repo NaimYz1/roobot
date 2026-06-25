@@ -77,7 +77,8 @@
   <!-- local planner: 'vfh' (gap histogram, the baseline) or 'harmonic'
        (Laplace/Dirac field on the memory grid; smooth, no gap-oscillation,
        no interior local minima - the featured contribution). A/B from CLI. -->
-  <arg name="local_planner" default="vfh"/>
+  <arg name="local_planner" default="harmonic"/>   <!-- working config; baseline: vfh -->
+
   <!-- harmonic-field tuning: more inflate_cells = gentler/earlier curving (less
        sharp steering); more iters = better-converged (smoother) field. -->
   <arg name="harm_iters" default="220"/>
@@ -107,7 +108,8 @@
   <!-- planner: use live /front/scan obstacles (true) or static map ONLY (false).
        false => VFH does ALL live dodging; use it to rule out phantom scan
        obstacles (floor leak during motion) corrupting the global path. -->
-  <arg name="use_scan_obstacles" default="true"/>
+  <arg name="use_scan_obstacles" default="false"/>  <!-- local layer dodges live obstacles -->
+
   <!-- treat unknown (un-mapped, grey) map cells as free (true) or BLOCKED
        (false). false keeps A* INSIDE the mapped area instead of exploring the
        whole empty grey map -> planning drops from minutes to milliseconds.
@@ -126,7 +128,8 @@
   <arg name="d_danger" default="0.55"/>
   <!-- controller: max turn rate (rad/s). Lower (1.2-1.5) = gentler, less
        erratic spinning on big turns / boxed-in recovery. -->
-  <arg name="w_max" default="1.5"/>
+  <arg name="w_max" default="0.5"/>   <!-- 0.5 = wide calm arcs (the working value) -->
+
   <!-- turn (rad) above which the robot PIVOTS in place vs ARCS forward. High
        (1.8 ~= 100deg) = smooth car-like arcs for avoidance, pivot only for
        near-reversals / boxed-in. Lower it if it arcs too lazily into things. -->
