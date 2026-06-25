@@ -112,7 +112,10 @@ class VFHPlusNode(object):
         self._harm_dir = None
         self._harm_filt = None
         self.harm_ds = int(rospy.get_param('~harm_downsample', 3))
-        self.harm_lp = rospy.get_param('~harm_smooth', 0.4)   # 0..1 per frame
+        self.harm_lp = rospy.get_param('~harm_smooth', 0.3)   # 0..1 per frame
+        self.harm_radius = rospy.get_param('~harm_radius', 1.5)   # local window (m)
+        self.harm_max_dev = math.radians(
+            rospy.get_param('~harm_max_dev_deg', 80.0))   # goal-bias clamp
         if self.local_planner == 'harmonic':
             self.harm = HarmonicField(
                 omega=rospy.get_param('~harm_omega', 1.9),
@@ -249,8 +252,14 @@ class VFHPlusNode(object):
         dist, tgt = self.carrot_base()
         if dist is None:
             return None                              # no global path yet
-        occ = self.grid.L > self.grid.occ_thresh
-        # max-pool by harm_ds for a fast solve (memory grid stays full-res for VFH)
+        full = self.grid.L > self.grid.occ_thresh
+        # crop to a LOCAL window: harmonic does LOCAL avoidance, A* does the
+        # global route. A whole-room window makes the field route around FAR
+        # walls and swing 80-180deg off the goal. Keep obstacles within harm_radius.
+        ch = self.grid.half
+        w = min(int(self.harm_radius / self.grid.res), ch)
+        occ = full[ch - w:ch + w, ch - w:ch + w]
+        # max-pool by harm_ds for a fast solve
         ds = self.harm_ds
         m = occ.shape[0] - (occ.shape[0] % ds)
         occ = occ[:m, :m].reshape(m // ds, ds, m // ds, ds).max(axis=(1, 3))
@@ -277,6 +286,11 @@ class VFHPlusNode(object):
         if ang_grid is None:
             return None
         new = ang_diff(ang_grid - th, 0.0)          # odom angle -> base frame
+        # keep avoidance GOAL-BIASED: never deviate more than harm_max_dev from
+        # the carrot direction, so the field cannot reverse the robot -> no spin.
+        dev = ang_diff(new, tgt)
+        if abs(dev) > self.harm_max_dev:
+            new = ang_diff(tgt + math.copysign(self.harm_max_dev, dev), 0.0)
         # low-pass the steering direction to kill frame-to-frame jitter -> no spin
         if self._harm_filt is None:
             self._harm_filt = new
