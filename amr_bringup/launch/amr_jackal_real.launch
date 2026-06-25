@@ -58,7 +58,7 @@
   <arg name="mount_pitch_rad" default="0.666988"/>
 
   <!-- obstacle slice kept from the 3D cloud, height above ground (m) -->
-  <arg name="z_min" default="0.15"/>
+  <arg name="z_min" default="0.20"/>
   <arg name="z_max" default="1.50"/>
 
   <!-- local-avoidance behaviour (A/B test from the CLI):
@@ -83,7 +83,7 @@
   <!-- local-obstacle MEMORY persistence (per-frame decay): higher = the box is
        remembered LONGER, so it isn't forgotten when it enters the lidar blind
        zone up close. 0.96 ~= 5 s. Always cleared on restart (in-memory). -->
-  <arg name="grid_decay" default="0.96"/>
+  <arg name="grid_decay" default="0.92"/>
   <!-- harmonic LOCAL window radius (m): only obstacles within this are used for
        the field (A* handles the global route). Smaller = more local/stable. -->
   <!-- harmonic grid coarsening: 3 = fast/coarse, 2 = finer, 1 = full-res (most
