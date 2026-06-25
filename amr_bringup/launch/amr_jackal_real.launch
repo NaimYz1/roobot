@@ -57,6 +57,13 @@
   <arg name="mount_pitch_deg" default="38.22"/>
   <arg name="mount_pitch_rad" default="0.666988"/>
 
+  <!-- IMU dynamic de-tilt: correct the de-tilt for the robot's LIVE pitch so the
+       floor stays flat while moving (kills the motion floor-leak). use_imu:=false
+       to disable; imu_gain:=-1.0 if the sign is backwards (floor leaks MORE when
+       it moves instead of less). -->
+  <arg name="use_imu"  default="true"/>
+  <arg name="imu_gain" default="1.0"/>
+
   <!-- obstacle slice kept from the 3D cloud, height above ground (m) -->
   <arg name="z_min" default="0.20"/>
   <arg name="z_max" default="1.50"/>
@@ -226,6 +233,8 @@
     <param name="mount_pitch_deg"  value="$(arg mount_pitch_deg)"/>
     <param name="mount_x"          value="$(arg lidar_x)"/>
     <param name="mount_z"          value="$(arg lidar_height)"/>
+    <param name="use_imu"          value="$(arg use_imu)"/>
+    <param name="imu_gain"         value="$(arg imu_gain)"/>
     <param name="z_min"            value="$(arg z_min)"/>
     <param name="z_max"            value="$(arg z_max)"/>
     <param name="min_range"        value="0.40"/>

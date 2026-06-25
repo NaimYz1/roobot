@@ -35,7 +35,7 @@ from vfh_logic import VFHPlus, ang_diff
 from local_grid import LocalGrid
 from harmonic_logic import HarmonicField, inflate
 
-from sensor_msgs.msg import PointCloud2, LaserScan
+from sensor_msgs.msg import PointCloud2, LaserScan, Imu
 from nav_msgs.msg import Path, OccupancyGrid
 from std_msgs.msg import Float32, Bool
 from tf.transformations import euler_from_quaternion
@@ -175,6 +175,20 @@ class VFHPlusNode(object):
             rospy.Subscriber('/map', OccupancyGrid, self.map_callback,
                              queue_size=1)
 
+        # --- IMU DYNAMIC DE-TILT: correct the de-tilt for the robot's LIVE pitch
+        # so the tilted-lidar floor stays flat WHILE MOVING (motion pitch is what
+        # leaks floor into the obstacle slice). Uses /livox/imu gravity with a
+        # self-calibrated baseline; imu_gain flips the sign if needed. ---
+        self.use_imu = rospy.get_param('~use_imu', True)
+        self.imu_gain = rospy.get_param('~imu_gain', 1.0)
+        self._imu_pitch = None
+        self._imu_base = None
+        self._imu_n = 0
+        self._imu_bsum = 0.0
+        self._imu_delta = 0.0
+        if self.use_imu:
+            rospy.Subscriber('/livox/imu', Imu, self.imu_callback, queue_size=20)
+
         self.detect_sensor()
         rospy.loginfo("=== VFH+ NODE STARTED | Mode: %s | planner=%s | "
                       "pitch=%.2fdeg h=%.3fm ground=%s/%s self=%s grid=%s "
@@ -219,6 +233,27 @@ class VFHPlusNode(object):
         self.map_ox = msg.info.origin.position.x
         self.map_oy = msg.info.origin.position.y
         self.map_h, self.map_w = h, w
+
+    def imu_callback(self, msg):
+        """Estimate the lidar's live pitch from the IMU gravity vector. The
+        baseline (robot level at startup) is auto-captured, so we only use the
+        CHANGE; imu_gain (+/-1) sets the sign. Heavily low-passed to reject
+        motion-acceleration noise on a slow robot."""
+        ax = msg.linear_acceleration.x
+        ay = msg.linear_acceleration.y
+        az = msg.linear_acceleration.z
+        if (ax * ax + ay * ay + az * az) < 1e-4:
+            return
+        p = math.atan2(ax, math.sqrt(ay * ay + az * az))
+        if self._imu_pitch is None:
+            self._imu_pitch = p
+        else:
+            self._imu_pitch += 0.08 * (p - self._imu_pitch)
+        if self._imu_base is None:                    # auto-calibrate baseline
+            self._imu_n += 1
+            self._imu_bsum += self._imu_pitch
+            if self._imu_n >= 50:
+                self._imu_base = self._imu_bsum / self._imu_n
 
     # ------------------------------------------------------------------
     def get_pose(self):
@@ -407,8 +442,14 @@ class VFHPlusNode(object):
         if pts.size == 0:
             return
         x, y, z = pts[:, 0], pts[:, 1], pts[:, 2]
-        ca = math.cos(self.mount_pitch)
-        sa = math.sin(self.mount_pitch)
+        # de-tilt by mount pitch + the robot's LIVE pitch deviation (IMU), so the
+        # floor stays flat while moving (kills the motion floor-leak at source).
+        pitch = self.mount_pitch
+        if self.use_imu and self._imu_base is not None and self._imu_pitch is not None:
+            self._imu_delta = self.imu_gain * (self._imu_pitch - self._imu_base)
+            pitch = self.mount_pitch + self._imu_delta
+        ca = math.cos(pitch)
+        sa = math.sin(pitch)
         xb = x * ca + z * sa + self.mount_x
         yb = y
         zb = -x * sa + z * ca + self.mount_z
@@ -580,8 +621,9 @@ class VFHPlusNode(object):
                   else '%+.0f' % math.degrees(self._harm_dir))
             rospy.loginfo_throttle(
                 1.0, "[HARM] harm_dir=%s deg | grid_occ=%d live=%d | "
-                "front=%.2fm boxed=%s" % (hd, nocc, self._harm_occ_n,
-                                          res['front_dist'], boxed_in))
+                "imu=%+.1fdeg front=%.2fm boxed=%s"
+                % (hd, nocc, self._harm_occ_n, math.degrees(self._imu_delta),
+                   res['front_dist'], boxed_in))
 
         self.dir_pub.publish(Float32(
             data=0.0 if direction is None else float(direction)))
