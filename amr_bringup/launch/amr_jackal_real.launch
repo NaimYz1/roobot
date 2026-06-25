@@ -74,7 +74,7 @@
   <!-- harmonic-field tuning: more inflate_cells = gentler/earlier curving (less
        sharp steering); more iters = better-converged (smoother) field. -->
   <arg name="harm_iters" default="220"/>
-  <arg name="harm_inflate_cells" default="4"/>
+  <arg name="harm_inflate_cells" default="2"/>
 
   <!-- planner: use live /front/scan obstacles (true) or static map ONLY (false).
        false => VFH does ALL live dodging; use it to rule out phantom scan

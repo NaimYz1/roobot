@@ -117,7 +117,7 @@ class VFHPlusNode(object):
             self.harm = HarmonicField(
                 omega=rospy.get_param('~harm_omega', 1.9),
                 iters=int(rospy.get_param('~harm_iters', 220)),
-                inflate_cells=int(rospy.get_param('~harm_inflate_cells', 4)))
+                inflate_cells=int(rospy.get_param('~harm_inflate_cells', 2)))
 
         # --- cluster / density filter (reject isolated specks) ---
         self.front_debug = rospy.get_param('~front_debug', False)
@@ -218,19 +218,26 @@ class VFHPlusNode(object):
         except Exception:
             return None
 
-    def target_angle(self):
+    def carrot_base(self):
+        """(distance_m, base-frame angle) to the lookahead 'carrot' point on the
+        global path; (None, 0.0) if no path/pose."""
         pose = self.get_pose()
         if pose is None or not self.path:
-            return 0.0
+            return None, 0.0
         x, y, yaw = pose
         pts = self.path
         d2 = [(px - x) ** 2 + (py - y) ** 2 for px, py in pts]
         i = int(np.argmin(d2))
+        j = i
         for j in range(i, len(pts)):
             if math.hypot(pts[j][0] - x, pts[j][1] - y) >= self.lookahead:
                 break
         tx, ty = pts[j]
-        return ang_diff(math.atan2(ty - y, tx - x), yaw)
+        return (math.hypot(tx - x, ty - y),
+                ang_diff(math.atan2(ty - y, tx - x), yaw))
+
+    def target_angle(self):
+        return self.carrot_base()[1]
 
     def compute_harmonic(self, od):
         """Harmonic-field steering: solve Laplace on the memory grid with a
@@ -239,18 +246,33 @@ class VFHPlusNode(object):
         (boxed/saddle) -> the controller rotates out via the VFH boxed path."""
         if self.grid is None or self.harm is None or self.grid.cx is None:
             return None
+        dist, tgt = self.carrot_base()
+        if dist is None:
+            return None                              # no global path yet
         occ = self.grid.L > self.grid.occ_thresh
         # max-pool by harm_ds for a fast solve (memory grid stays full-res for VFH)
         ds = self.harm_ds
         m = occ.shape[0] - (occ.shape[0] % ds)
         occ = occ[:m, :m].reshape(m // ds, ds, m // ds, ds).max(axis=(1, 3))
-        half = occ.shape[0] // 2
+        n = occ.shape[0]
+        half = n // 2
+        res_ds = self.grid.res * ds
         _, _, th = od
-        goal_odom = th + self.target_angle()        # goal direction in odom
-        R = half - 1
+        goal_odom = th + tgt                         # carrot direction in odom
         c, s = math.cos(goal_odom), math.sin(goal_odom)
-        t = R / max(abs(c), abs(s), 1e-6)
-        sink = (int(round(half + t * s)), int(round(half + t * c)))  # (iy, ix)
+        # SINK = the path carrot (it's in free space, so the field connects to it
+        # AROUND obstacles). Walk it back toward the robot until it lands free.
+        dc = min(dist / res_ds, half - 1)
+        sink, d = None, dc
+        while d > 1.0:
+            ix = min(max(int(round(half + d * c)), 1), n - 2)
+            iy = min(max(int(round(half + d * s)), 1), n - 2)
+            if not occ[iy, ix]:
+                sink = (iy, ix)
+                break
+            d -= 1.0
+        if sink is None:
+            return None                              # carrot direction blocked
         ang_grid, _ = self.harm.solve(occ, sink, (half, half))
         if ang_grid is None:
             return None
@@ -447,6 +469,8 @@ class VFHPlusNode(object):
 
     # ------------------------------------------------------------------
     def process(self, header, angles, ranges):
+        if rospy.is_shutdown():
+            return
         tgt = self.target_angle()
         res = self.vfh.steer(angles, ranges, tgt)
 
