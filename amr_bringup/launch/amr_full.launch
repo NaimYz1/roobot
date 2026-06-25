@@ -1,0 +1,161 @@
+<!-- ============================================================
+     AMR FULL SYSTEM (SIMULATION) - Clearpath JACKAL + ROS Melodic
+     Gazebo + AMCL (auto initial pose!) + planner + VFH+ + controller + RViz
+
+     Usage:
+       roslaunch amr_bringup amr_full.launch                manual mode
+       roslaunch amr_bringup amr_full.launch auto:=true     random obstacles+goal
+       roslaunch amr_bringup amr_full.launch auto:=true loop:=true  endless runs
+
+     Requires: ros-melodic-jackal-simulator ros-melodic-jackal-desktop
+     Simulated Jackal uses the front_laser config (SICK LMS1xx on
+     /front/scan) so the whole stack runs unchanged. On the REAL Jackal
+     with the Livox Mid-360 use amr_jackal_real.launch instead.
+     NOTE: the map must match the world! Pass map_file:= and world_name:=
+     together if you change either.
+============================================================ -->
+<launch>
+
+  <!-- ====================== ARGS ====================== -->
+  <!-- default world/map/spawn all match dingoMap (world generated from the
+       map by make_world_from_map.py). For the OLD dingo race world use:
+       world_name:=/opt/ros/melodic/share/dingo_gazebo/worlds/dingo_race.world
+       map_file:=$(find amr_bringup)/maps/test_map.yaml x:=1.49 y:=-5.49 -->
+  <arg name="world_name" default="$(find amr_bringup)/worlds/dingoMap1.world"/>
+  <arg name="x"   default="-2.12"/>
+  <arg name="y"   default="-1.67"/>
+  <arg name="z"   default="0.2"/>
+  <arg name="yaw" default="0.0"/>
+  <arg name="map_file" default="$(find amr_bringup)/maps/dingoMap1.yaml"/>
+
+  <arg name="gazebo" default="true"/>
+  <arg name="rviz"   default="true"/>
+  <arg name="gui"    default="true"/>
+
+  <!-- auto scenario -->
+  <arg name="auto"           default="false"/>
+  <arg name="auto_obstacles" default="$(arg auto)"/>
+  <arg name="auto_goal"      default="$(arg auto)"/>
+  <arg name="loop"           default="false"/>
+  <arg name="num_obstacles"  default="5"/>
+  <arg name="seed"           default="-1"/>
+
+  <!-- speed: 0.9 default (drift-safe in sim), Jackal hardware max 2.0 -->
+  <arg name="v_max" default="0.8"/>
+
+  <param name="use_sim_time" value="true"/>
+
+  <!-- ====================== GAZEBO (JACKAL) ====================== -->
+  <!-- jackal_world.launch hardcodes the spawn at (0,0), so we include
+       empty_world + spawn_jackal directly to keep the spawn pose args.
+       config:=front_laser adds the SICK LMS1xx publishing /front/scan.
+       gui:=false runs Gazebo headless - HUGE perf win, watch RViz instead -->
+  <group if="$(arg gazebo)">
+    <include file="$(find gazebo_ros)/launch/empty_world.launch">
+      <arg name="world_name"   value="$(arg world_name)"/>
+      <arg name="gui"          value="$(arg gui)"/>
+      <arg name="use_sim_time" value="true"/>
+      <arg name="debug"        value="0"/>
+    </include>
+    <include file="$(find jackal_gazebo)/launch/spawn_jackal.launch">
+      <arg name="x"        value="$(arg x)"/>
+      <arg name="y"        value="$(arg y)"/>
+      <arg name="z"        value="$(arg z)"/>
+      <arg name="yaw"      value="$(arg yaw)"/>
+      <arg name="config"   value="front_laser"/>
+      <arg name="joystick" value="false"/>
+    </include>
+  </group>
+
+  <!-- ====================== MAP SERVER ====================== -->
+  <node name="map_server" pkg="map_server" type="map_server"
+        args="$(arg map_file)" output="screen"/>
+
+  <!-- ====================== AMCL ======================
+       initial_pose now matches the Gazebo spawn point.
+       This was THE bug behind "robot doesn't move toward goal":
+       AMCL used to start at (0,0,0) while Gazebo spawned the robot
+       at (1.49, -5.49) -> TF was wrong until a manual 2D Pose Estimate. -->
+  <node pkg="amcl" type="amcl" name="amcl" output="screen">
+    <param name="use_map_topic"   value="true"/>
+    <param name="odom_frame_id"   value="odom"/>
+    <param name="base_frame_id"   value="base_link"/>
+    <param name="global_frame_id" value="map"/>
+    <param name="odom_model_type" value="diff"/>
+    <param name="update_min_d"    value="0.1"/>
+    <param name="update_min_a"    value="0.1"/>
+    <param name="min_particles"   value="500"/>
+    <param name="max_particles"   value="2000"/>
+    <param name="laser_max_beams" value="60"/>
+    <param name="laser_max_range" value="12.0"/>
+    <param name="laser_min_range" value="0.1"/>
+    <!-- start where Gazebo spawns the robot -->
+    <param name="initial_pose_x"  value="$(arg x)"/>
+    <param name="initial_pose_y"  value="$(arg y)"/>
+    <param name="initial_pose_a"  value="$(arg yaw)"/>
+    <param name="initial_cov_xx"  value="0.1"/>
+    <param name="initial_cov_yy"  value="0.1"/>
+    <param name="initial_cov_aa"  value="0.1"/>
+    <remap from="scan" to="/front/scan"/>
+  </node>
+
+  <!-- ====================== GLOBAL PLANNER (A*/Theta*) ====================== -->
+  <node name="planner_node" pkg="amr_planning" type="planner_node.py"
+        output="screen" respawn="true">
+    <!-- MUST match VFH clearance (robot_radius+safety_margin=0.43):
+         a smaller value lets A* plan through gaps VFH+ refuses to drive,
+         and the two argue forever while the robot spins in place -->
+    <param name="inflate_radius"     value="0.45"/>
+    <param name="plan_resolution"    value="0.05"/>
+    <param name="replan_period"      value="1.0"/>
+    <param name="heuristic_weight"   value="1.2"/>
+    <!-- route around obstacles the laser sees but the map doesn't -->
+    <param name="use_scan_obstacles" value="true"/>
+    <!-- scan_decay = max UNSEEN age of a remembered obstacle. Obstacles
+         are forgotten when the lidar sees PAST their spot (evidence),
+         this only ages out ones that left while unobserved -->
+    <param name="scan_decay"         value="30.0"/>
+  </node>
+
+  <!-- ====================== VFH+ LOCAL AVOIDANCE ====================== -->
+  <node name="vfh_node" pkg="amr_perception" type="vfh_plus_node.py"
+        output="screen" respawn="true">
+    <!-- 2.5 deg/bin: 72 bins could not see narrow-but-real gaps -->
+    <param name="num_bins"         value="144"/>
+    <param name="max_range"        value="4.0"/>
+    <!-- 1.4 saturated the histogram in ~2 m doorways (boxed-in flicker);
+         emergency stopping lives in the controller (d_danger), not here -->
+    <param name="active_range"     value="1.1"/>
+    <!-- Jackal footprint 0.508 x 0.430 m -> circumscribed radius ~0.33 -->
+    <param name="robot_radius"     value="0.33"/>
+    <param name="safety_margin"    value="0.10"/>
+    <param name="target_lookahead" value="1.2"/>
+  </node>
+
+  <!-- ====================== PURE PURSUIT (race-tuned) ====================== -->
+  <node name="pure_pursuit_node" pkg="amr_control" type="pp_controller_node.py"
+        output="screen" respawn="true">
+    <param name="v_max"          value="$(arg v_max)"/>
+    <param name="a_lat"          value="0.9"/>
+    <param name="lookahead_gain" value="0.9"/>
+    <param name="goal_radius"    value="0.15"/>
+    <!-- slow only when something is actually AHEAD, and not below 30% -->
+    <param name="d_danger"       value="0.55"/>
+    <param name="d_blend"        value="1.5"/>
+  </node>
+
+  <!-- ====================== SCENARIO (auto obstacles/goal) ====================== -->
+  <node name="scenario_node" pkg="amr_bringup" type="scenario_node.py"
+        output="screen">
+    <param name="auto_obstacles" value="$(arg auto_obstacles)"/>
+    <param name="auto_goal"      value="$(arg auto_goal)"/>
+    <param name="loop"           value="$(arg loop)"/>
+    <param name="num_obstacles"  value="$(arg num_obstacles)"/>
+    <param name="seed"           value="$(arg seed)"/>
+  </node>
+
+  <!-- ====================== RVIZ ====================== -->
+  <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz"
+        args="-d $(find amr_bringup)/rviz/amr.rviz"/>
+
+</launch>

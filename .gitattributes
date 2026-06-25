@@ -1,0 +1,24 @@
+# Enforce LF line endings everywhere so Python2 nodes + shell scripts run on the
+# robot/VM after editing on Windows. CRLF on a .py shebang => "bad interpreter".
+* text=auto eol=lf
+
+# Be explicit for the files that actually execute or get parsed by ROS.
+*.py      text eol=lf
+*.sh      text eol=lf
+*.launch  text eol=lf
+*.xml     text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+*.world   text eol=lf
+*.rviz    text eol=lf
+*.cfg     text eol=lf
+*.md      text eol=lf
+CMakeLists.txt text eol=lf
+
+# Binary assets: never touch line endings.
+*.pgm  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.pcd  binary
+*.bag  binary

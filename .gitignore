@@ -1,0 +1,25 @@
+# Python bytecode / caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS cruft
+*~
+*.swp
+.DS_Store
+Thumbs.db
+
+# Old node backups kept on the robot, not source-of-truth
+*.bak
+*.bak2
+
+# catkin build artifacts (the workspace is built on the VM/robot, never committed)
+build/
+devel/
+install/
+logs/
+.catkin_workspace
+.catkin_tools/
+
+# scratch / sync test files
+__synctest.txt

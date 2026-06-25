@@ -1,0 +1,188 @@
+<!-- ============================================================
+     AMR REAL ROBOT - Clearpath JACKAL + Livox Mid-360 (ROS1 Melodic)
+
+     Runs ON the Jackal's onboard PC. The Jackal base (jackal_bringup)
+     is already running as a service and provides /odom, TF odom->base_link
+     and the twist_mux that consumes our /cmd_vel.
+
+     Sensor pipeline (Livox Mid-360, livox_ros_driver2, xfer_format=0):
+       /livox/lidar (PointCloud2) -> vfh_plus_node          (3D, direct)
+       /livox/lidar -> pointcloud_to_laserscan -> /front/scan
+                    -> AMCL (localization) + planner (scan obstacles)
+
+     Start the Livox driver first (PointCloud2 output!). This robot has a
+     Mid-360S, so use the "s" launch with xfer_format=0:
+       roslaunch livox_ros_driver2 msg_MID360s.launch   (xfer_format=0)
+     (keep launch_livox:=false; we start the driver separately).
+
+     Usage:
+       roslaunch amr_bringup amr_jackal_real.launch
+       roslaunch amr_bringup amr_jackal_real.launch v_max:=0.8
+       (then publish a goal on /move_base_simple/goal, e.g. from RViz
+        on your laptop with ROS_MASTER_URI pointed at the Jackal)
+============================================================ -->
+<launch>
+
+  <!-- ====================== ARGS ====================== -->
+  <arg name="map_file" default="$(find amr_bringup)/maps/dingoMap1.yaml"/>
+
+  <!-- where the robot starts on the map -->
+  <arg name="x"   default="0.0"/>
+  <arg name="y"   default="0.0"/>
+  <arg name="yaw" default="0.0"/>
+
+  <!-- 0.8 = tuned real-world cruise (knee of the spin-vs-speed curve;
+       BELOW ~0.8 the robot drops under the pivot-speed threshold and
+       stop-spins at every bend). Jackal hw max 2.0; 0.8-1.0 all run clean. -->
+  <arg name="v_max" default="0.8"/>
+
+  <!-- Livox Mid-360 -->
+  <arg name="launch_livox" default="false"/>
+  <arg name="livox_topic"  default="/livox/lidar"/>
+  <arg name="livox_frame"  default="livox_frame"/>
+  <!-- sensor optical-centre height above the GROUND (m). CALIBRATED value
+       from calibrate_livox.py (RANSAC floor fit). -->
+  <arg name="lidar_height" default="0.447"/>
+  <!-- forward offset of the sensor from base_link (m) -->
+  <arg name="lidar_x"      default="0.0"/>
+
+  <!-- CALIBRATED Mid-360 tilt (calibrate_livox.py, RANSAC floor fit):
+       38.22 deg nose-DOWN, optical centre 0.447 m up. The old 45 deg / 0.395 m
+       were WRONG: a ~7 deg pitch error tilts the floor into the obstacle slice
+       (phantom ring at ~0.4 m -> permanent boxed-in + AMCL teleport).
+       mount_pitch_deg feeds the VFH+ node (it rotates the raw cloud itself);
+       mount_pitch_rad feeds the base_link->livox_frame TF used by
+       pointcloud_to_laserscan->AMCL. Keep the two IN SYNC (same sign). If RViz
+       shows the floor as a wall or the cloud rotated, flip the sign on both. -->
+  <arg name="mount_pitch_deg" default="38.22"/>
+  <arg name="mount_pitch_rad" default="0.666988"/>
+
+  <!-- obstacle slice kept from the 3D cloud, height above ground (m) -->
+  <arg name="z_min" default="0.15"/>
+  <arg name="z_max" default="1.50"/>
+
+  <arg name="rviz" default="false"/>
+
+  <!-- ====================== LIVOX DRIVER (optional) ====================== -->
+  <include if="$(arg launch_livox)"
+           file="$(find livox_ros_driver2)/launch_ROS1/msg_MID360.launch">
+    <!-- make sure xfer_format=0 (PointCloud2) inside that launch file -->
+  </include>
+
+  <!-- TF: base_link -> livox_frame. args = x y z yaw pitch roll.
+       Sensor is tilted, so pitch = mount_pitch_rad. Height above base_link is
+       published directly (Clearpath URDF puts base_link at ground level). -->
+  <node pkg="tf" type="static_transform_publisher" name="livox_tf"
+        args="$(arg lidar_x) 0 $(arg lidar_height) 0 $(arg mount_pitch_rad) 0 base_link $(arg livox_frame) 50"/>
+
+  <!-- ====================== POINTCLOUD to /front/scan ======================
+       AMCL and the planner consume a 2D LaserScan; flatten the Mid-360
+       cloud into one. heights are relative to base_link (target_frame). -->
+  <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node"
+        name="livox_to_scan" output="screen">
+    <remap from="cloud_in" to="$(arg livox_topic)"/>
+    <remap from="scan"     to="/front/scan"/>
+    <rosparam subst_value="true">
+      target_frame: base_link
+      transform_tolerance: 0.05
+      min_height: $(arg z_min)
+      max_height: $(arg z_max)
+      angle_min: -3.1415926
+      angle_max: 3.1415926
+      angle_increment: 0.0058
+      scan_time: 0.1
+      range_min: 0.4
+      range_max: 30.0
+      use_inf: true
+      concurrency_level: 1
+    </rosparam>
+  </node>
+
+  <!-- ====================== MAP SERVER ====================== -->
+  <node name="map_server" pkg="map_server" type="map_server"
+        args="$(arg map_file)" output="screen"/>
+
+  <!-- ====================== AMCL ====================== -->
+  <node pkg="amcl" type="amcl" name="amcl" output="screen">
+    <param name="use_map_topic"   value="true"/>
+    <param name="odom_frame_id"   value="odom"/>
+    <param name="base_frame_id"   value="base_link"/>
+    <param name="global_frame_id" value="map"/>
+    <param name="odom_model_type" value="diff"/>
+    <param name="update_min_d"    value="0.1"/>
+    <param name="update_min_a"    value="0.1"/>
+    <param name="min_particles"   value="500"/>
+    <param name="max_particles"   value="2000"/>
+    <param name="laser_max_beams" value="60"/>
+    <param name="laser_max_range" value="25.0"/>
+    <param name="laser_min_range" value="0.4"/>
+    <param name="initial_pose_x"  value="$(arg x)"/>
+    <param name="initial_pose_y"  value="$(arg y)"/>
+    <param name="initial_pose_a"  value="$(arg yaw)"/>
+    <param name="initial_cov_xx"  value="0.25"/>
+    <param name="initial_cov_yy"  value="0.25"/>
+    <param name="initial_cov_aa"  value="0.2"/>
+    <remap from="scan" to="/front/scan"/>
+  </node>
+
+  <!-- ====================== GLOBAL PLANNER (A*/Theta*) ====================== -->
+  <node name="planner_node" pkg="amr_planning" type="planner_node.py"
+        output="screen" respawn="true">
+    <!-- MUST match VFH clearance (robot_radius+safety_margin = 0.33+0.10 =
+         0.43). Larger (0.50) was tested and BLOCKS the map's doorways ->
+         robot can't reach goals. 0.45 is the tuned value. -->
+    <param name="inflate_radius"     value="0.45"/>
+    <param name="plan_resolution"    value="0.05"/>
+    <param name="replan_period"      value="1.0"/>
+    <param name="heuristic_weight"   value="1.2"/>
+    <param name="use_scan_obstacles" value="true"/>
+    <!-- scan_decay = max UNSEEN age of a remembered obstacle. Obstacles
+         are forgotten when the lidar sees PAST their spot (evidence),
+         this only ages out ones that left while unobserved -->
+    <param name="scan_decay"         value="30.0"/>
+  </node>
+
+  <!-- ====================== VFH+ LOCAL AVOIDANCE (3D Livox) ====================== -->
+  <node name="vfh_node" pkg="amr_perception" type="vfh_plus_node.py"
+        output="screen" respawn="true">
+    <!-- 2.5 deg/bin: 72 bins could not see narrow-but-real gaps -->
+    <param name="num_bins"         value="144"/>
+    <param name="max_range"        value="4.0"/>
+    <!-- 1.4 saturated the histogram in ~2 m doorways (boxed-in flicker);
+         emergency stopping lives in the controller (d_danger), not here -->
+    <param name="active_range"     value="1.6"/>
+    <!-- Jackal footprint 0.508 x 0.430 m -> circumscribed radius ~0.33 -->
+    <param name="robot_radius"     value="0.33"/>
+    <!-- robot_radius+safety_margin = 0.43 m clearance, matched to the
+         planner inflate_radius so A* and VFH+ agree (else they fight). -->
+    <param name="safety_margin"    value="0.10"/>
+    <param name="target_lookahead" value="1.2"/>
+    <!-- Livox Mid-360, tilted (mount_pitch_deg) -->
+    <param name="livox_topic"      value="$(arg livox_topic)"/>
+    <param name="mount_pitch_deg"  value="$(arg mount_pitch_deg)"/>
+    <param name="mount_x"          value="$(arg lidar_x)"/>
+    <param name="mount_z"          value="$(arg lidar_height)"/>
+    <param name="z_min"            value="$(arg z_min)"/>
+    <param name="z_max"            value="$(arg z_max)"/>
+    <param name="min_range"        value="0.40"/>
+    <!-- AMCL's scan comes from livox_to_scan; the node must NOT also publish
+         /front/scan or the two publishers fight and the scan jitters. -->
+    <param name="publish_scan"     value="false"/>
+  </node>
+
+  <!-- ====================== PURE PURSUIT (race-tuned) ====================== -->
+  <node name="pure_pursuit_node" pkg="amr_control" type="pp_controller_node.py"
+        output="screen" respawn="true">
+    <param name="v_max"          value="$(arg v_max)"/>
+    <param name="a_lat"          value="0.9"/>
+    <param name="lookahead_gain" value="0.9"/>
+    <param name="goal_radius"    value="0.15"/>
+    <param name="d_danger"       value="0.55"/>
+    <param name="d_blend"        value="1.5"/>
+  </node>
+
+  <!-- ====================== RVIZ (off by default on the robot) ====================== -->
+  <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz"
+        args="-d $(find amr_bringup)/rviz/amr.rviz"/>
+
+</launch>

@@ -1,0 +1,77 @@
+<!-- amr_system.launch — ROS1 Melodic port for Clearpath Jackal (legacy fallback) -->
+<launch>
+
+  <param name="use_sim_time" value="true"/>
+
+  <!-- ============================================================
+       MAP SERVER
+  ============================================================ -->
+  <arg name="map_file" default="$(find amr_bringup)/maps/test_map.yaml"/>
+
+  <node name="map_server" pkg="map_server" type="map_server"
+        args="$(arg map_file)" output="screen"/>
+
+  <!-- ============================================================
+       AMCL LOCALIZATION
+       Replaces static TF — robot knows where it is on the map!
+  ============================================================ -->
+  <node pkg="amcl" type="amcl" name="amcl" output="screen">
+    <param name="use_map_topic"             value="true"/>
+    <param name="odom_frame_id"             value="odom"/>
+    <param name="base_frame_id"             value="base_link"/>
+    <param name="global_frame_id"           value="map"/>
+    <param name="odom_model_type"           value="diff"/>
+    <!-- How far robot must move before updating -->
+    <param name="update_min_d"              value="0.1"/>
+    <param name="update_min_a"              value="0.1"/>
+    <!-- Particle filter settings -->
+    <param name="min_particles"             value="500"/>
+    <param name="max_particles"             value="2000"/>
+    <!-- Laser settings -->
+    <param name="laser_max_beams"           value="60"/>
+    <param name="laser_max_range"           value="12.0"/>
+    <param name="laser_min_range"           value="0.1"/>
+    <!-- Initial pose uncertainty (wide = global localization) -->
+    <param name="initial_cov_xx"            value="0.5"/>
+    <param name="initial_cov_yy"            value="0.5"/>
+    <param name="initial_cov_aa"            value="0.5"/>
+    <!-- Remap scan topic -->
+    <remap from="scan" to="/front/scan"/>
+  </node>
+
+  <!-- ============================================================
+       PRM GLOBAL PLANNER
+  ============================================================ -->
+  <node name="prm_node" pkg="amr_planning" type="prm_node.py"
+        output="screen" respawn="true">
+    <param name="num_nodes"         value="3000"/>
+    <param name="connection_radius" value="80"/>
+    <param name="inflate_radius"    value="0.15"/>
+  </node>
+
+  <!-- ============================================================
+       VFH LOCAL PLANNER
+  ============================================================ -->
+  <node name="vfh_node" pkg="amr_perception" type="vfh_node.py"
+        output="screen" respawn="true">
+    <param name="num_bins"       value="360"/>
+    <param name="max_range"      value="5.0"/>
+    <param name="stop_dist"      value="0.50"/>
+    <param name="wait_limit"     value="5"/>
+    <param name="confirm_frames" value="10.0"/>
+    <param name="z_min"          value="0.05"/>
+    <param name="z_max"          value="2.0"/>
+    <param name="expansion_w"    value="6"/>
+  </node>
+
+  <!-- ============================================================
+       PURE PURSUIT CONTROLLER
+  ============================================================ -->
+  <node name="pure_pursuit_node" pkg="amr_control" type="pure_pursuit.py"
+        output="screen" respawn="true">
+    <param name="lookahead_distance"  value="0.4"/>
+    <param name="desired_linear_vel"  value="0.3"/>
+    <param name="goal_radius"         value="0.05"/>
+  </node>
+
+</launch>

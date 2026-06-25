@@ -1,0 +1,84 @@
+<!-- ============================================================
+     AMR REAL ROBOT - Hokuyo 2D laser ONLY (no Livox).
+     Use this to get the robot localizing + driving reliably: it is the
+     exact 2D-laser setup the simulation uses, so it is known-good.
+     The tilted Livox is bypassed here; re-enable it for 3D avoidance
+     later (amr_jackal_real.launch) once the tilt sign is verified.
+
+     Needs: the Jackal base running (robot_up.sh) -> provides /scan
+     (Hokuyo, frame 'laser', already in the TF tree), /odom, twist_mux.
+
+       roslaunch amr_bringup amr_jackal_real_2d.launch
+============================================================ -->
+<launch>
+  <arg name="map_file"   default="$(find amr_bringup)/maps/dingoMap1.yaml"/>
+  <arg name="x"   default="0.0"/>
+  <arg name="y"   default="0.0"/>
+  <arg name="yaw" default="0.0"/>
+  <arg name="v_max" default="0.8"/>
+  <!-- the real Hokuyo publishes here; everything localizes/plans off it -->
+  <arg name="scan_topic" default="/scan"/>
+
+  <node name="map_server" pkg="map_server" type="map_server"
+        args="$(arg map_file)" output="screen"/>
+
+  <!-- ====================== AMCL (Hokuyo) ====================== -->
+  <node pkg="amcl" type="amcl" name="amcl" output="screen">
+    <param name="use_map_topic"   value="true"/>
+    <param name="odom_frame_id"   value="odom"/>
+    <param name="base_frame_id"   value="base_link"/>
+    <param name="global_frame_id" value="map"/>
+    <param name="odom_model_type" value="diff"/>
+    <param name="update_min_d"    value="0.1"/>
+    <param name="update_min_a"    value="0.1"/>
+    <param name="min_particles"   value="500"/>
+    <param name="max_particles"   value="2000"/>
+    <param name="laser_max_beams" value="60"/>
+    <param name="laser_max_range" value="25.0"/>
+    <param name="laser_min_range" value="0.1"/>
+    <param name="initial_pose_x"  value="$(arg x)"/>
+    <param name="initial_pose_y"  value="$(arg y)"/>
+    <param name="initial_pose_a"  value="$(arg yaw)"/>
+    <param name="initial_cov_xx"  value="0.25"/>
+    <param name="initial_cov_yy"  value="0.25"/>
+    <param name="initial_cov_aa"  value="0.2"/>
+    <remap from="scan" to="$(arg scan_topic)"/>
+  </node>
+
+  <!-- ====================== GLOBAL PLANNER (Hokuyo obstacles) ============ -->
+  <node name="planner_node" pkg="amr_planning" type="planner_node.py"
+        output="screen" respawn="true">
+    <remap from="/front/scan" to="$(arg scan_topic)"/>
+    <param name="inflate_radius"     value="0.45"/>
+    <param name="plan_resolution"    value="0.05"/>
+    <param name="replan_period"      value="1.0"/>
+    <param name="heuristic_weight"   value="1.2"/>
+    <param name="use_scan_obstacles" value="true"/>
+    <param name="scan_decay"         value="30.0"/>
+  </node>
+
+  <!-- ====================== VFH+ (Hokuyo 2D, Livox disabled) ============ -->
+  <node name="vfh_node" pkg="amr_perception" type="vfh_plus_node.py"
+        output="screen" respawn="true">
+    <remap from="/front/scan" to="$(arg scan_topic)"/>
+    <!-- nonexistent topic -> Livox auto-detect fails -> falls back to scan -->
+    <param name="livox_topic"      value="/__livox_disabled__"/>
+    <param name="num_bins"         value="144"/>
+    <param name="max_range"        value="4.0"/>
+    <param name="active_range"     value="1.1"/>
+    <param name="robot_radius"     value="0.33"/>
+    <param name="safety_margin"    value="0.10"/>
+    <param name="target_lookahead" value="1.2"/>
+  </node>
+
+  <!-- ====================== PURE PURSUIT ====================== -->
+  <node name="pure_pursuit_node" pkg="amr_control" type="pp_controller_node.py"
+        output="screen" respawn="true">
+    <param name="v_max"          value="$(arg v_max)"/>
+    <param name="a_lat"          value="0.9"/>
+    <param name="lookahead_gain" value="0.9"/>
+    <param name="goal_radius"    value="0.15"/>
+    <param name="d_danger"       value="0.55"/>
+    <param name="d_blend"        value="1.5"/>
+  </node>
+</launch>
