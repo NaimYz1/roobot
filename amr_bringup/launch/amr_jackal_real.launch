@@ -72,10 +72,15 @@
        false => VFH does ALL live dodging; use it to rule out phantom scan
        obstacles (floor leak during motion) corrupting the global path. -->
   <arg name="use_scan_obstacles" default="true"/>
-  <!-- treat unknown (un-mapped, grey) map cells as free (true) or as blocked
-       (false). false keeps the planner INSIDE the known/mapped area on a rough
-       or partial map, and stops A* from exploring the whole empty unknown. -->
-  <arg name="unknown_is_free" default="true"/>
+  <!-- treat unknown (un-mapped, grey) map cells as free (true) or BLOCKED
+       (false). false keeps A* INSIDE the mapped area instead of exploring the
+       whole empty grey map -> planning drops from minutes to milliseconds.
+       Default false now (set true only if you must drive through un-mapped space).
+       NOTE: with false, click 2D Nav Goals inside the WHITE (mapped) area. -->
+  <arg name="unknown_is_free" default="false"/>
+  <!-- planner grid cell size (m). 0.10 = 4x fewer cells than the 0.05 map ->
+       much faster A* on a big map; fine since VFH+ does the fine avoidance. -->
+  <arg name="plan_resolution" default="0.10"/>
   <!-- controller: distance (m) where avoidance fully takes over / e-brakes.
        raise (e.g. 0.7) to react to obstacles earlier and not clip them. -->
   <arg name="d_danger" default="0.55"/>
@@ -151,7 +156,7 @@
          0.43). Larger (0.50) was tested and BLOCKS the map's doorways ->
          robot can't reach goals. 0.45 is the tuned value. -->
     <param name="inflate_radius"     value="0.45"/>
-    <param name="plan_resolution"    value="0.05"/>
+    <param name="plan_resolution"    value="$(arg plan_resolution)"/>
     <param name="replan_period"      value="1.0"/>
     <param name="heuristic_weight"   value="1.2"/>
     <param name="use_scan_obstacles" value="$(arg use_scan_obstacles)"/>
