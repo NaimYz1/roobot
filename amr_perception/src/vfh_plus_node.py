@@ -33,10 +33,10 @@ import sensor_msgs.point_cloud2 as pc2
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vfh_logic import VFHPlus, ang_diff
 from local_grid import LocalGrid
-from harmonic_logic import HarmonicField
+from harmonic_logic import HarmonicField, inflate
 
 from sensor_msgs.msg import PointCloud2, LaserScan
-from nav_msgs.msg import Path
+from nav_msgs.msg import Path, OccupancyGrid
 from std_msgs.msg import Float32, Bool
 from tf.transformations import euler_from_quaternion
 
@@ -165,6 +165,16 @@ class VFHPlusNode(object):
         rospy.Subscriber('/global_path', Path, self.path_callback,
                          queue_size=1)
 
+        # static map -> subtract KNOWN walls from the harmonic field so it only
+        # avoids LIVE/unexpected obstacles (the box); A* handles the walls.
+        self.static_map = None
+        self.map_res = self.map_ox = self.map_oy = 0.0
+        self.map_w = self.map_h = 0
+        self._harm_occ_n = 0
+        if self.local_planner == 'harmonic':
+            rospy.Subscriber('/map', OccupancyGrid, self.map_callback,
+                             queue_size=1)
+
         self.detect_sensor()
         rospy.loginfo("=== VFH+ NODE STARTED | Mode: %s | planner=%s | "
                       "pitch=%.2fdeg h=%.3fm ground=%s/%s self=%s grid=%s "
@@ -200,6 +210,15 @@ class VFHPlusNode(object):
         if msg.poses:
             self.path = [(p.pose.position.x, p.pose.position.y)
                          for p in msg.poses]
+
+    def map_callback(self, msg):
+        w, h = msg.info.width, msg.info.height
+        occ = (np.array(msg.data, dtype=np.int16).reshape(h, w) > 50)
+        self.static_map = inflate(occ, 3)        # pad for localisation slack
+        self.map_res = msg.info.resolution
+        self.map_ox = msg.info.origin.position.x
+        self.map_oy = msg.info.origin.position.y
+        self.map_h, self.map_w = h, w
 
     # ------------------------------------------------------------------
     def get_pose(self):
@@ -248,6 +267,38 @@ class VFHPlusNode(object):
     def target_angle(self):
         return self.carrot_base()[1]
 
+    def _live_occ(self, od):
+        """Local-grid occupancy with STATIC-MAP walls removed -> LIVE/unexpected
+        obstacles only (e.g. the box). Stops the harmonic field being deflected
+        by room walls that A* already routes around. Needs map+odom poses."""
+        occ = self.grid.L > self.grid.occ_thresh
+        if self.static_map is None:
+            return occ
+        pose = self.get_pose()                       # map -> base_link
+        if pose is None:
+            return occ
+        iy, ix = np.nonzero(occ)
+        if ix.size == 0:
+            return occ
+        mx, my, myaw = pose
+        ox, oy, oyaw = od                            # odom -> base_link
+        dyaw = myaw - oyaw
+        cdy, sdy = math.cos(dyaw), math.sin(dyaw)
+        half = self.grid.half
+        pxo = self.grid.cx + (ix - half) * self.grid.res     # odom coords
+        pyo = self.grid.cy + (iy - half) * self.grid.res
+        rx, ry = pxo - ox, pyo - oy
+        mxp = mx + cdy * rx - sdy * ry               # -> map coords
+        myp = my + sdy * rx + cdy * ry
+        mcx = ((mxp - self.map_ox) / self.map_res).astype(np.int32)
+        mcy = ((myp - self.map_oy) / self.map_res).astype(np.int32)
+        valid = (mcx >= 0) & (mcx < self.map_w) & (mcy >= 0) & (mcy < self.map_h)
+        is_static = np.zeros(ix.size, dtype=bool)
+        is_static[valid] = self.static_map[mcy[valid], mcx[valid]]
+        live = occ.copy()
+        live[iy[is_static], ix[is_static]] = False   # drop KNOWN walls
+        return live
+
     def _fan_sink(self, occ, goal_odom, half, n, dc):
         """Goal-ward fan search for the farthest free sink cell (carrot ray first,
         then +/-15..60deg). Returns (iy, ix) or None if fully enclosed."""
@@ -275,10 +326,9 @@ class VFHPlusNode(object):
         dist, tgt = self.carrot_base()
         if dist is None:
             return None                              # no global path yet
-        full = self.grid.L > self.grid.occ_thresh
+        full = self._live_occ(od)          # LIVE obstacles only (walls removed)
         # crop to a LOCAL window: harmonic does LOCAL avoidance, A* does the
-        # global route. A whole-room window makes the field route around FAR
-        # walls and swing 80-180deg off the goal. Keep obstacles within harm_radius.
+        # global route. Keep obstacles within harm_radius.
         ch = self.grid.half
         w = min(int(self.harm_radius / self.grid.res), ch)
         occ = full[ch - w:ch + w, ch - w:ch + w]
@@ -287,6 +337,7 @@ class VFHPlusNode(object):
         m = occ.shape[0] - (occ.shape[0] % ds)
         occ = occ[:m, :m].reshape(m // ds, ds, m // ds, ds).max(axis=(1, 3))
         n = occ.shape[0]
+        self._harm_occ_n = int(occ.sum())  # LIVE cells the field sees
         half = n // 2
         res_ds = self.grid.res * ds
         _, _, th = od
@@ -528,8 +579,9 @@ class VFHPlusNode(object):
             hd = ('--' if self._harm_dir is None
                   else '%+.0f' % math.degrees(self._harm_dir))
             rospy.loginfo_throttle(
-                1.0, "[HARM] harm_dir=%s deg | grid_occ_cells=%d | "
-                "front=%.2fm boxed=%s" % (hd, nocc, res['front_dist'], boxed_in))
+                1.0, "[HARM] harm_dir=%s deg | grid_occ=%d live=%d | "
+                "front=%.2fm boxed=%s" % (hd, nocc, self._harm_occ_n,
+                                          res['front_dist'], boxed_in))
 
         self.dir_pub.publish(Float32(
             data=0.0 if direction is None else float(direction)))
