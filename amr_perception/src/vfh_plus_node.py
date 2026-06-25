@@ -269,20 +269,21 @@ class VFHPlusNode(object):
         _, _, th = od
         goal_odom = th + tgt                         # carrot direction in odom
         c, s = math.cos(goal_odom), math.sin(goal_odom)
-        # SINK = the path carrot (it's in free space, so the field connects to it
-        # AROUND obstacles). Walk it back toward the robot until it lands free.
+        # SINK = the carrot cell; if it's blocked, snap to the NEAREST FREE cell
+        # so the field still connects (instead of giving up -> silent None ->
+        # VFH whiplash). Only truly enclosed (no free cell) returns None.
         dc = min(dist / res_ds, half - 1)
-        sink, d = None, dc
-        while d > 1.0:
-            ix = min(max(int(round(half + d * c)), 1), n - 2)
-            iy = min(max(int(round(half + d * s)), 1), n - 2)
-            if not occ[iy, ix]:
-                sink = (iy, ix)
-                break
-            d -= 1.0
-        if sink is None:
-            return None                              # carrot direction blocked
-        ang_grid, _ = self.harm.solve(occ, sink, (half, half))
+        cy = min(max(int(round(half + dc * s)), 1), n - 2)
+        cx = min(max(int(round(half + dc * c)), 1), n - 2)
+        if occ[cy, cx]:
+            freeyx = np.argwhere(~occ)
+            if freeyx.shape[0] == 0:
+                return None                          # truly enclosed
+            k = int(np.argmin((freeyx[:, 0] - cy) ** 2 +
+                              (freeyx[:, 1] - cx) ** 2))
+            cy = min(max(int(freeyx[k, 0]), 1), n - 2)
+            cx = min(max(int(freeyx[k, 1]), 1), n - 2)
+        ang_grid, _ = self.harm.solve(occ, (cy, cx), (half, half))
         if ang_grid is None:
             return None
         new = ang_diff(ang_grid - th, 0.0)          # odom angle -> base frame
@@ -492,9 +493,11 @@ class VFHPlusNode(object):
         boxed_in = res.get('boxed', direction is None)
         # harmonic mode: VFH still gives front/min distance + boxed (safety),
         # but the SMOOTH harmonic descent gives the steering direction.
-        if (self.local_planner == 'harmonic' and self._harm_dir is not None
-                and not boxed_in):
-            direction = self._harm_dir
+        if self.local_planner == 'harmonic' and not boxed_in:
+            if self._harm_dir is not None:
+                direction = self._harm_dir
+            elif self._harm_filt is not None:
+                direction = self._harm_filt   # hold last good (don't VFH-whiplash)
 
         # harmonic visibility: is the box IN the grid? is the field steering?
         if self.local_planner == 'harmonic' and self.grid is not None:

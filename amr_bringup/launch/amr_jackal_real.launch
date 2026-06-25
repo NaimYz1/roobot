@@ -77,6 +77,9 @@
   <arg name="harm_inflate_cells" default="2"/>
   <!-- harmonic LOCAL window radius (m): only obstacles within this are used for
        the field (A* handles the global route). Smaller = more local/stable. -->
+  <!-- harmonic grid coarsening: 3 = fast/coarse, 2 = finer, 1 = full-res (most
+       CPU, smoothest field). Pair a finer grid with more harm_iters. -->
+  <arg name="harm_downsample" default="3"/>
   <arg name="harm_radius" default="1.5"/>
   <!-- max steering deviation (deg) from the goal/carrot direction: the field
        can veer this much to dodge, but never reverse -> no spin. -->
@@ -224,6 +227,7 @@
     <param name="local_planner"    value="$(arg local_planner)"/>
     <param name="harm_iters"         value="$(arg harm_iters)"/>
     <param name="harm_inflate_cells" value="$(arg harm_inflate_cells)"/>
+    <param name="harm_downsample"    value="$(arg harm_downsample)"/>
     <param name="harm_radius"        value="$(arg harm_radius)"/>
     <param name="harm_max_dev_deg"   value="$(arg harm_max_dev_deg)"/>
     <param name="grid_decay"       value="0.92"/>
