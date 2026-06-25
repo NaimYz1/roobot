@@ -116,6 +116,12 @@ class VFHPlusNode(object):
         self.harm_radius = rospy.get_param('~harm_radius', 1.5)   # local window (m)
         self.harm_max_dev = math.radians(
             rospy.get_param('~harm_max_dev_deg', 80.0))   # goal-bias clamp
+        # hybrid = FLOW primary + SINK fallback when the flow stagnates (best of
+        # both: smooth in the open, pulls around head-on obstacles). flow|sink
+        # force one mechanism. harm_stag_deg = flow deviation from goal that
+        # counts as stagnation and triggers the sink.
+        self.harm_mode = rospy.get_param('~harm_mode', 'hybrid')
+        self.harm_stag_ang = math.radians(rospy.get_param('~harm_stag_deg', 75.0))
         if self.local_planner == 'harmonic':
             self.harm = HarmonicField(
                 omega=rospy.get_param('~harm_omega', 1.9),
@@ -242,10 +248,27 @@ class VFHPlusNode(object):
     def target_angle(self):
         return self.carrot_base()[1]
 
+    def _fan_sink(self, occ, goal_odom, half, n, dc):
+        """Goal-ward fan search for the farthest free sink cell (carrot ray first,
+        then +/-15..60deg). Returns (iy, ix) or None if fully enclosed."""
+        for dev in (0.0, 0.26, -0.26, 0.52, -0.52, 0.79, -0.79, 1.05, -1.05):
+            if abs(dev) > self.harm_max_dev:
+                continue
+            ca = math.cos(goal_odom + dev)
+            sa = math.sin(goal_odom + dev)
+            d = dc
+            while d > 1.0:
+                ix = min(max(int(round(half + d * ca)), 1), n - 2)
+                iy = min(max(int(round(half + d * sa)), 1), n - 2)
+                if not occ[iy, ix]:
+                    return (iy, ix)
+                d -= 1.0
+        return None
+
     def compute_harmonic(self, od):
-        """Harmonic-field steering: solve Laplace on the memory grid with a
-        goal-direction border SINK, return the base-frame descent angle (the
-        smooth flow-around-obstacles direction). None if the field is flat
+        """Hybrid harmonic steering on the memory grid: potential FLOW primary
+        (smooth, no discrete sink), falling back to a goal-ward SINK when the
+        flow stagnates head-on. Returns the base-frame descent angle. None if
         (boxed/saddle) -> the controller rotates out via the VFH boxed path."""
         if self.grid is None or self.harm is None or self.grid.cx is None:
             return None
@@ -268,32 +291,22 @@ class VFHPlusNode(object):
         res_ds = self.grid.res * ds
         _, _, th = od
         goal_odom = th + tgt                         # carrot direction in odom
-        c, s = math.cos(goal_odom), math.sin(goal_odom)
-        # SINK: scan a fan of directions around the carrot (GOAL-WARD FIRST) for
-        # the farthest free cell. Deterministic + goal-biased, and steps the sink
-        # to the SIDE of a head-on obstacle without jumping around (a single
-        # nearest-free cell jumps frame-to-frame -> oscillation).
-        del c, s
         dc = min(dist / res_ds, half - 1)
-        sink = None
-        for dev in (0.0, 0.26, -0.26, 0.52, -0.52, 0.79, -0.79, 1.05, -1.05):
-            if abs(dev) > self.harm_max_dev:
-                continue
-            ca = math.cos(goal_odom + dev)
-            sa = math.sin(goal_odom + dev)
-            d = dc
-            while d > 1.0:
-                ix = min(max(int(round(half + d * ca)), 1), n - 2)
-                iy = min(max(int(round(half + d * sa)), 1), n - 2)
-                if not occ[iy, ix]:
-                    sink = (iy, ix)
-                    break
-                d -= 1.0
+        ang_grid = None
+        if self.harm_mode in ('flow', 'hybrid'):
+            # FLOW primary: smooth ideal-flow steering (no wide/discrete sink).
+            ang_grid, _ = self.harm.solve_flow(occ, goal_odom, (half, half))
+            stagnated = (ang_grid is None or
+                         abs(ang_diff(ang_grid, goal_odom)) > self.harm_stag_ang)
+            if self.harm_mode == 'hybrid' and stagnated:
+                # flow stalled (head-on / back-flow) -> SINK pulls it around.
+                sink = self._fan_sink(occ, goal_odom, half, n, dc)
+                if sink is not None:
+                    ang_grid, _ = self.harm.solve(occ, sink, (half, half))
+        else:                                        # 'sink' only
+            sink = self._fan_sink(occ, goal_odom, half, n, dc)
             if sink is not None:
-                break
-        if sink is None:
-            return None                              # truly enclosed
-        ang_grid, _ = self.harm.solve(occ, sink, (half, half))
+                ang_grid, _ = self.harm.solve(occ, sink, (half, half))
         if ang_grid is None:
             return None
         new = ang_diff(ang_grid - th, 0.0)          # odom angle -> base frame

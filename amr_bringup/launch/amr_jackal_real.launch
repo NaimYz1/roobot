@@ -84,6 +84,9 @@
   <!-- max steering deviation (deg) from the goal/carrot direction: the field
        can veer this much to dodge, but never reverse -> no spin. -->
   <arg name="harm_max_dev_deg" default="80.0"/>
+  <!-- steering mechanism: hybrid = ideal-FLOW primary (smooth) + SINK fallback
+       when the flow stagnates head-on (recommended). flow|sink force one. -->
+  <arg name="harm_mode" default="hybrid"/>
 
   <!-- planner: use live /front/scan obstacles (true) or static map ONLY (false).
        false => VFH does ALL live dodging; use it to rule out phantom scan
@@ -230,6 +233,7 @@
     <param name="harm_downsample"    value="$(arg harm_downsample)"/>
     <param name="harm_radius"        value="$(arg harm_radius)"/>
     <param name="harm_max_dev_deg"   value="$(arg harm_max_dev_deg)"/>
+    <param name="harm_mode"          value="$(arg harm_mode)"/>
     <param name="grid_decay"       value="0.92"/>
     <param name="grid_occ_thresh"  value="1.0"/>
     <!-- AMCL's scan comes from livox_to_scan; the node must NOT also publish
