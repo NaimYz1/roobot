@@ -112,8 +112,8 @@ class VFHPlusNode(object):
         self._harm_dir = None
         self._harm_filt = None
         self.harm_ds = int(rospy.get_param('~harm_downsample', 3))
-        self.harm_lp = rospy.get_param('~harm_smooth', 0.2)   # 0..1 per frame (lower=smoother/slower)
-        self.harm_radius = rospy.get_param('~harm_radius', 1.5)   # local window (m)
+        self.harm_lp = rospy.get_param('~harm_smooth', 0.15)  # 0..1 per frame (lower=smoother/slower)
+        self.harm_radius = rospy.get_param('~harm_radius', 2.0)   # local window (m)
         self.harm_max_dev = math.radians(
             rospy.get_param('~harm_max_dev_deg', 80.0))   # goal-bias clamp
         # hybrid = FLOW primary + SINK fallback when the flow stagnates (best of
@@ -126,7 +126,7 @@ class VFHPlusNode(object):
             self.harm = HarmonicField(
                 omega=rospy.get_param('~harm_omega', 1.9),
                 iters=int(rospy.get_param('~harm_iters', 220)),
-                inflate_cells=int(rospy.get_param('~harm_inflate_cells', 2)))
+                inflate_cells=int(rospy.get_param('~harm_inflate_cells', 3)))
 
         # --- cluster / density filter (reject isolated specks) ---
         self.front_debug = rospy.get_param('~front_debug', False)

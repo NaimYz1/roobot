@@ -74,13 +74,17 @@
   <!-- harmonic-field tuning: more inflate_cells = gentler/earlier curving (less
        sharp steering); more iters = better-converged (smoother) field. -->
   <arg name="harm_iters" default="220"/>
-  <arg name="harm_inflate_cells" default="2"/>
+  <!-- inflate the LIVE obstacle more = react EARLIER + curve gentler (safe now
+       that static walls are masked out of the field). -->
+  <arg name="harm_inflate_cells" default="3"/>
+  <!-- steering low-pass: lower = smoother (less snappy), slower. -->
+  <arg name="harm_smooth" default="0.15"/>
   <!-- harmonic LOCAL window radius (m): only obstacles within this are used for
        the field (A* handles the global route). Smaller = more local/stable. -->
   <!-- harmonic grid coarsening: 3 = fast/coarse, 2 = finer, 1 = full-res (most
        CPU, smoothest field). Pair a finer grid with more harm_iters. -->
   <arg name="harm_downsample" default="3"/>
-  <arg name="harm_radius" default="1.5"/>
+  <arg name="harm_radius" default="2.0"/>
   <!-- max steering deviation (deg) from the goal/carrot direction: the field
        can veer this much to dodge, but never reverse -> no spin. -->
   <arg name="harm_max_dev_deg" default="80.0"/>
@@ -230,6 +234,7 @@
     <param name="local_planner"    value="$(arg local_planner)"/>
     <param name="harm_iters"         value="$(arg harm_iters)"/>
     <param name="harm_inflate_cells" value="$(arg harm_inflate_cells)"/>
+    <param name="harm_smooth"        value="$(arg harm_smooth)"/>
     <param name="harm_downsample"    value="$(arg harm_downsample)"/>
     <param name="harm_radius"        value="$(arg harm_radius)"/>
     <param name="harm_max_dev_deg"   value="$(arg harm_max_dev_deg)"/>
