@@ -102,7 +102,7 @@ class VFHPlusNode(object):
             self.grid = LocalGrid(
                 size_m=rospy.get_param('~grid_size', 6.0),
                 res=rospy.get_param('~grid_res', 0.05),
-                decay=rospy.get_param('~grid_decay', 0.92),
+                decay=rospy.get_param('~grid_decay', 0.96),
                 l_hit=rospy.get_param('~grid_l_hit', 0.7),
                 occ_thresh=rospy.get_param('~grid_occ_thresh', 1.0),
                 min_pts=int(rospy.get_param('~grid_min_pts', 2)))
@@ -112,8 +112,8 @@ class VFHPlusNode(object):
         self._harm_dir = None
         self._harm_filt = None
         self.harm_ds = int(rospy.get_param('~harm_downsample', 3))
-        self.harm_lp = rospy.get_param('~harm_smooth', 0.15)  # 0..1 per frame (lower=smoother/slower)
-        self.harm_radius = rospy.get_param('~harm_radius', 2.0)   # local window (m)
+        self.harm_lp = rospy.get_param('~harm_smooth', 0.2)   # 0..1 per frame (lower=smoother/slower)
+        self.harm_radius = rospy.get_param('~harm_radius', 1.5)   # local window (m)
         self.harm_max_dev = math.radians(
             rospy.get_param('~harm_max_dev_deg', 80.0))   # goal-bias clamp
         # hybrid = FLOW primary + SINK fallback when the flow stagnates (best of
