@@ -30,7 +30,7 @@ class PurePursuitController(object):
                  lookahead_min=0.45,
                  lookahead_max=1.8,
                  goal_radius=0.15,
-                 rotate_threshold=1.0,
+                 rotate_threshold=1.8,   # only turns > ~100deg pivot; rest ARC
                  d_danger=0.45,
                  d_blend=1.2,
                  vfh_gain=1.8):
@@ -142,11 +142,15 @@ class PurePursuitController(object):
         else:
             desired = ang_diff(alpha + beta * dva, 0.0)
 
+        # Pivot in place ONLY when truly boxed (can't move forward) or the turn
+        # is near a reversal (> rotate_threshold). Otherwise ARC forward via the
+        # drive branch below (car-like). A skid-steer CAN spin in place, but
+        # pivoting on every avoidance turn is the snapping "tank" motion; arcing
+        # while moving forward is smooth and keeps making progress.
         d_stop = min(self.d_danger, 0.30) if goal_close else self.d_danger
-        if self._spinning or fd <= d_stop or \
-                (abs(desired) > self.rotate_threshold
-                 and abs(self.v_cmd) < 0.3):
-            if not self._spinning and (abs(desired) > 0.35 or fd <= d_stop):
+        need_pivot = (fd <= d_stop) or (abs(desired) > self.rotate_threshold)
+        if self._spinning or need_pivot:
+            if not self._spinning and need_pivot:
                 self._spinning = True
                 self._spin_target = yaw + desired
             if self._spinning:

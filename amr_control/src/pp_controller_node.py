@@ -41,6 +41,10 @@ class PPControllerNode(object):
             d_danger=rospy.get_param('~d_danger', 0.45),
             d_blend=rospy.get_param('~d_blend', 1.2),
             vfh_gain=rospy.get_param('~vfh_gain', 1.8),
+            # turn (rad) above which it pivots in place instead of arcing forward.
+            # high (1.8 ~= 100deg) => car-like arcs for avoidance, pivot only for
+            # near-reversals/boxed-in.
+            rotate_threshold=rospy.get_param('~rotate_threshold', 1.8),
         )
         self.rate_hz = rospy.get_param('~rate', 20.0)
 
