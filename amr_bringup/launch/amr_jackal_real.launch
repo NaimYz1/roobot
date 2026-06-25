@@ -88,6 +88,9 @@
   <!-- controller: distance (m) where avoidance fully takes over / e-brakes.
        raise (e.g. 0.7) to react to obstacles earlier and not clip them. -->
   <arg name="d_danger" default="0.55"/>
+  <!-- controller: max turn rate (rad/s). Lower (1.2-1.5) = gentler, less
+       erratic spinning on big turns / boxed-in recovery. -->
+  <arg name="w_max" default="1.5"/>
 
   <arg name="rviz" default="false"/>
 
@@ -217,6 +220,7 @@
     <param name="goal_radius"    value="0.15"/>
     <param name="d_danger"       value="$(arg d_danger)"/>
     <param name="d_blend"        value="1.5"/>
+    <param name="w_max"          value="$(arg w_max)"/>
   </node>
 
   <!-- ====================== RVIZ (off by default on the robot) ====================== -->

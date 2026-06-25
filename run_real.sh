@@ -7,7 +7,7 @@
 # ============================================================
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAP="${1:-myroom}"
-VMAX="${2:-0.5}"
+VMAX="${2:-0.3}"   # safe default; reactive layer has time to react to obstacles
 MAP_YAML="$DIR/amr_bringup/maps/$MAP.yaml"
 
 source "$DIR/set_ros_env.sh"
