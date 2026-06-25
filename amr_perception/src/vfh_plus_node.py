@@ -32,6 +32,7 @@ import sensor_msgs.point_cloud2 as pc2
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vfh_logic import VFHPlus, ang_diff
+from local_grid import LocalGrid
 
 from sensor_msgs.msg import PointCloud2, LaserScan
 from nav_msgs.msg import Path
@@ -61,9 +62,14 @@ class VFHPlusNode(object):
         self.min_range = rospy.get_param('~min_range', 0.35)
         self.debug = rospy.get_param('~debug', True)
 
-        # --- per-frame ground-plane removal ---
+        # --- per-frame ground removal. mode 'gate' = deterministic robust
+        # z-band (de-tilt is calibrated; median offset over a TIGHT low band is
+        # unbiased by real obstacles, unlike the obstacle-biased plane fit);
+        # 'lsq' = legacy least-squares plane fit. ---
         self.ground_filter = rospy.get_param('~ground_filter', True)
+        self.ground_mode = rospy.get_param('~ground_mode', 'lsq')
         self.ground_band = rospy.get_param('~ground_band', 0.30)
+        self.ground_gate_band = rospy.get_param('~ground_gate_band', 0.10)
 
         # --- self-box: delete the robot's own body (base frame, metres) ---
         self.self_filter = rospy.get_param('~self_filter', True)
@@ -79,6 +85,20 @@ class VFHPlusNode(object):
         self.odom_frame = rospy.get_param('~odom_frame', 'odom')
         self.base_frame = rospy.get_param('~base_frame', 'base_link')
         self._accum = []   # list of (t_sec, xo_array, yo_array) in odom frame
+
+        # --- short-term local MEMORY: decaying log-odds occupancy grid in the
+        # odom frame (cures single-frame flicker/spin; what the harmonic field
+        # will later solve on). OFF by default; enabled via ~local_grid. ---
+        self.use_grid = rospy.get_param('~local_grid', False)
+        self.grid = None
+        if self.use_grid:
+            self.grid = LocalGrid(
+                size_m=rospy.get_param('~grid_size', 6.0),
+                res=rospy.get_param('~grid_res', 0.05),
+                decay=rospy.get_param('~grid_decay', 0.92),
+                l_hit=rospy.get_param('~grid_l_hit', 0.7),
+                occ_thresh=rospy.get_param('~grid_occ_thresh', 1.0),
+                min_pts=int(rospy.get_param('~grid_min_pts', 2)))
 
         # --- cluster / density filter (reject isolated specks) ---
         self.front_debug = rospy.get_param('~front_debug', False)
@@ -119,10 +139,12 @@ class VFHPlusNode(object):
 
         self.detect_sensor()
         rospy.loginfo("=== VFH+ NODE STARTED | Mode: %s | pitch=%.2fdeg "
-                      "h=%.3fm ground=%s self=%s accum=%s clean_scan=%s ===",
+                      "h=%.3fm ground=%s/%s self=%s accum=%s grid=%s "
+                      "clean_scan=%s ===",
                       self.sensor_mode, math.degrees(self.mount_pitch),
-                      self.mount_z, self.ground_filter, self.self_filter,
-                      self.accumulate, self.publish_scan)
+                      self.mount_z, self.ground_filter, self.ground_mode,
+                      self.self_filter, self.accumulate, self.use_grid,
+                      self.publish_scan)
 
     # ------------------------------------------------------------------
     def detect_sensor(self):
@@ -237,8 +259,16 @@ class VFHPlusNode(object):
                      (np.abs(yb) < self.self_y_abs))
             keep &= ~inbox
         keep_self = keep.copy()                 # after min_range + self-box
-        height = zb - 0.0
-        if self.ground_filter:
+        height = zb
+        if self.ground_filter and self.ground_mode == 'gate':
+            # deterministic: robust floor offset = median over a TIGHT low band
+            # (real obstacles sit above it, so they don't bias the offset).
+            low = keep & (np.abs(zb) < self.ground_gate_band)
+            off = (float(np.median(zb[low]))
+                   if int(np.count_nonzero(low)) > 50 else 0.0)
+            height = zb - off
+            keep &= (height > self.z_min) & (height < self.z_max)
+        elif self.ground_filter:
             low = keep & (np.abs(zb) < self.ground_band)
             ground = np.zeros_like(zb)
             nlow = int(np.count_nonzero(low))
@@ -283,10 +313,19 @@ class VFHPlusNode(object):
         xbk = xb[keep]
         ybk = yb[keep]
 
-        # ---- temporal accumulation in the odom frame (optional) ----
+        # ---- short-term local memory: rolling log-odds grid (preferred) or the
+        # legacy temporal point buffer (~accumulate); both in the odom frame ----
         now = msg.header.stamp.to_sec() if msg.header.stamp else rospy.get_time()
-        od = self.get_odom() if self.accumulate else None
-        if od is not None:
+        od = self.get_odom() if (self.use_grid or self.accumulate) else None
+        if self.use_grid and od is not None:
+            tx, ty, th = od
+            c = math.cos(th)
+            s = math.sin(th)
+            xo = tx + xbk * c - ybk * s
+            yo = ty + xbk * s + ybk * c
+            self.grid.update(tx, ty, xo, yo)
+            xb2, yb2 = self.grid.occupied_base(tx, ty, th)
+        elif self.accumulate and od is not None:
             tx, ty, th = od
             c = math.cos(th)
             s = math.sin(th)

@@ -165,6 +165,15 @@
     <param name="z_min"            value="$(arg z_min)"/>
     <param name="z_max"            value="$(arg z_max)"/>
     <param name="min_range"        value="0.40"/>
+    <!-- diag_ground.py confirmed the 38.22deg de-tilt: floor spike at +0.005m,
+         sigma ~2cm, no floor leak through z_min. So use the deterministic robust
+         gate (not the obstacle-biased plane fit) + a short-term local MEMORY
+         grid to stop the single-frame flicker/spin. Revert with local_grid:=false
+         (and ground_mode:=lsq) to get the exact old single-frame behaviour. -->
+    <param name="ground_mode"      value="gate"/>
+    <param name="local_grid"       value="true"/>
+    <param name="grid_decay"       value="0.92"/>
+    <param name="grid_occ_thresh"  value="1.0"/>
     <!-- AMCL's scan comes from livox_to_scan; the node must NOT also publish
          /front/scan or the two publishers fight and the scan jitters. -->
     <param name="publish_scan"     value="false"/>
