@@ -19,5 +19,7 @@ if [ ! -f "$MAP_YAML" ]; then
 fi
 echo ">>> launching nav on map: $MAP_YAML   (v_max=$VMAX)"
 echo ">>> in RViz: 2D Pose Estimate on the robot's real spot, then 2D Nav Goal."
+# args 3+ are forwarded to roslaunch, e.g.:
+#   bash run_real.sh myroom 0.5 use_scan_obstacles:=false unknown_is_free:=false
 roslaunch "$DIR/amr_bringup/launch/amr_jackal_real.launch" \
-    v_max:="$VMAX" map_file:="$MAP_YAML"
+    v_max:="$VMAX" map_file:="$MAP_YAML" "${@:3}"
