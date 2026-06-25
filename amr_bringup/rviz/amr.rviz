@@ -37,10 +37,22 @@ Visualization Manager:
       Color Scheme: map
       Draw Behind: true
       Value: true
+    - Class: rviz/PointCloud2
+      Enabled: true
+      Name: Livox Cloud
+      Topic: /livox/lidar
+      Decay Time: 0.4
+      Style: Points
+      Size (Pixels): 3
+      Color: 0; 255; 0
+      Color Transformer: FlatColor
+      Queue Size: 10
+      Value: true
     - Class: rviz/LaserScan
       Enabled: true
       Name: Front Laser
       Topic: /front/scan
+      Decay Time: 0.3
       Color: 255; 0; 0
       Size (m): 0.05
       Style: Flat Squares
