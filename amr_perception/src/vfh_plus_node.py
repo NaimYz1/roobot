@@ -458,6 +458,15 @@ class VFHPlusNode(object):
                 and not boxed_in):
             direction = self._harm_dir
 
+        # harmonic visibility: is the box IN the grid? is the field steering?
+        if self.local_planner == 'harmonic' and self.grid is not None:
+            nocc = int(np.count_nonzero(self.grid.L > self.grid.occ_thresh))
+            hd = ('--' if self._harm_dir is None
+                  else '%+.0f' % math.degrees(self._harm_dir))
+            rospy.loginfo_throttle(
+                1.0, "[HARM] harm_dir=%s deg | grid_occ_cells=%d | "
+                "front=%.2fm boxed=%s" % (hd, nocc, res['front_dist'], boxed_in))
+
         self.dir_pub.publish(Float32(
             data=0.0 if direction is None else float(direction)))
         self.min_pub.publish(Float32(data=res['min_dist']))
