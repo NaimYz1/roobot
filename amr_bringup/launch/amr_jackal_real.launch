@@ -61,6 +61,13 @@
   <arg name="z_min" default="0.15"/>
   <arg name="z_max" default="1.50"/>
 
+  <!-- local-avoidance behaviour (A/B test from the CLI):
+       local_grid=true  -> VFH+ reads a decaying log-odds MEMORY grid (cures spin)
+       ground_mode=gate -> deterministic robust z-gate (vs obstacle-biased 'lsq')
+       old single-frame behaviour:  local_grid:=false ground_mode:=lsq -->
+  <arg name="local_grid"  default="true"/>
+  <arg name="ground_mode" default="gate"/>
+
   <arg name="rviz" default="false"/>
 
   <!-- ====================== LIVOX DRIVER (optional) ====================== -->
@@ -170,8 +177,8 @@
          gate (not the obstacle-biased plane fit) + a short-term local MEMORY
          grid to stop the single-frame flicker/spin. Revert with local_grid:=false
          (and ground_mode:=lsq) to get the exact old single-frame behaviour. -->
-    <param name="ground_mode"      value="gate"/>
-    <param name="local_grid"       value="true"/>
+    <param name="ground_mode"      value="$(arg ground_mode)"/>
+    <param name="local_grid"       value="$(arg local_grid)"/>
     <param name="grid_decay"       value="0.92"/>
     <param name="grid_occ_thresh"  value="1.0"/>
     <!-- AMCL's scan comes from livox_to_scan; the node must NOT also publish
