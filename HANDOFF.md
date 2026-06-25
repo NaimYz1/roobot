@@ -1,152 +1,279 @@
-# Handoff — Jackal + Livox Mid-360 AMR navigation stack
+# HANDOFF — Jackal + Livox Harmonic-Field Navigation (READ THIS FIRST)
 
-## LATEST UPDATE (most recent work — read this first)
-- **Sensor is Livox Mid-360S**, tilted ~38° nose-down, 0.447 m up. Calibrated values
-  already in launch arg defaults: `mount_pitch_deg=38.22`, `mount_pitch_rad=0.666988`,
-  `lidar_height=0.447`, `z_min=0.15`, `min_range=0.40`.
-- **Symptom found**: `/front_distance` FLICKERED between the real obstacle (~0.4–0.9 m)
-  and background (1.76 m) when someone stood in front. Root cause = Mid-360
-  **non-repetitive scanning**: a single 0.1 s frame is too sparse to reliably
-  fill the narrow front corridor (Livox docs: coverage rises with integration time).
-- **Fix applied** in `amr_perception/src/vfh_plus_node.py` (rewritten, compiles,
-  headless test ALL PASS, simulation-verified):
-  1. **temporal accumulation** — buffers last ~0.4 s of obstacle points in the
-     ODOM frame (motion-compensated via TF) then runs VFH+ on the dense cloud.
-  2. **cluster/density filter** — a cell needs >= `min_cluster`(3) points to be an
-     obstacle, rejecting 1–2 stray floor/noise specks.
-  Plus the earlier per-frame ground removal + self-box. New params (vfh_node block):
-  `accumulate`(true), `accumulate_time`(0.40), `min_cluster`(3), `cluster_ang_deg`(2.0),
-  `cluster_rng`(0.15). Backups on robot: `vfh_plus_node.py.bak`/`.bak2`.
-- **NOT YET CONFIRMED ON HARDWARE**: user needs to `scp` the new node to the Jackal
-  and re-test `rostopic echo /front_distance` standing in front (should be STEADY now).
-- **Still open**: AMCL scan path. The recovery (re-enable `pointcloud_to_laserscan`,
-  set VFH `publish_scan:=false`, planner `use_scan_obstacles:=false`) was given but
-  not confirmed. The cleaner option (VFH publishes a clean `/front/scan`) is built
-  (`publish_scan` param) but previously didn't reach AMCL — diagnose with
-  `rostopic hz/info /front/scan` if you try it again.
-- Battery was flashing yellow (low) — charge it; it can disable motors.
+Current as of 2026-06-26. **Supersedes all earlier handoff notes.** Written for a
+fresh session / different model / post-compaction. Self-contained.
 
-## Goal
-Get a Clearpath **Jackal** to drive to an RViz **2D Nav Goal** while avoiding
-live obstacles, using a **downward-tilted Livox Mid-360 (3D)** as the only
-sensor. The supervisor requires the 3D Livox — **do NOT switch to the 2D Hokuyo**
-(the Jackal physically has one, but it's off-limits for this project).
+---
 
-## Hardware facts (measured/confirmed)
-- Robot: Jackal, hostname `cpr-j100-0540`, LAN IP **192.168.1.124**, user `administrator`.
-- Dev machine: an Ubuntu **VM**, IP **192.168.1.109** (bridged, same subnet). RViz runs here.
-- Sensor: **Livox Mid-360**, mounted **tilted ~38° nose-DOWN** (not 45° — that was a wrong assumption from old notes), optical centre **~0.447 m** above floor. It stares at the floor, which is the root of most pain.
-- Mid-360 also sees the **ceiling** (parallel plane) and the robot's **own structure** (deck, the 2D Hokuyo in front, a rear antenna/mast).
-- Livox is powered by a **separate external battery** (fine, unrelated to issues).
-- ROS1 **Melodic**, python2 on the robot.
+## 0. TL;DR — current state: IT WORKS
 
-## Networking / startup (working)
-- On Jackal: `bash ~/robot_up.sh` → tmux sessions: roscore + base (`~/jackal_base.launch` = real hardware: accessories+base+hokuyo) + lidar (`livox_ros_driver2 msg_MID360s.launch`, xfer_format=0 → `/livox/lidar` PointCloud2). This is the REAL base, NOT Gazebo.
-- Env on every Jackal terminal: `export ROS_MASTER_URI=http://192.168.1.124:11311 ROS_IP=192.168.1.124`
-- Env on the VM (for RViz): `ROS_MASTER_URI=http://192.168.1.124:11311`, `ROS_IP=192.168.1.109`. Both machines must ping each other.
+A Clearpath **Jackal** UGV drives to a commanded goal and **smoothly arcs around
+obstacles** using **only a tilted Livox Mid-360 3D LiDAR**, via a custom stack:
+**A\*** global planner + a **harmonic / ideal-fluid-flow potential-field local
+planner** (the thesis contribution) + **Pure Pursuit** tracking + **AMCL**
+localisation. After a long debugging session it reliably avoids a box and reaches
+the goal with **no erratic spinning**.
 
-## Workspace layout
-- Source of truth (edited on Windows/VM): `~/amr_source/` (VM) ⇄ the user's Desktop\src\src folder.
-- Built on the robot: `~/amr_ws/` (`catkin_make`, devel space). Deploy with
-  `scp ~/amr_source/<pkg>/... administrator@192.168.1.124:~/amr_ws/src/<pkg>/...`
-  Python nodes need no rebuild — just relaunch.
-- Packages: `amr_bringup` (launch/maps/rviz), `amr_perception` (VFH+), `amr_planning` (A*), `amr_control` (pure pursuit).
-- Main launch: `amr_bringup/launch/amr_jackal_real.launch`. Map: `dingoMap1.yaml`.
-- The algorithm itself is validated offline: `python3 headless_test.py` → ALL PASS.
+**Run it (on the robot):** `bash ~/amr_source/run_real.sh myroom`
+**Status:** working on flat routes; minor transients on ramps. Remaining work is
+*capture + write-up*, not debugging.
 
-## What has been FIXED and verified
-1. **Build/deploy hygiene**: don't put the source folder inside `~/amr_ws/src`
-   (causes "Multiple packages found"). CMakeLists install lists corrected.
-2. **`/cmd_vel` works**: pure_pursuit → twist_mux → `/jackal_velocity_controller/cmd_vel`. No e-stop, drivers active. Direct `rostopic pub /cmd_vel ...` moves the robot.
-3. **Sensor calibration** via new tool `amr_perception/src/calibrate_livox.py`
-   (RANSAC floor-plane fit; rejects ceiling; prints exact values). Result, now in launch arg defaults:
-   - `mount_pitch_deg = 38.22`, `mount_pitch_rad = 0.666988`, `lidar_height = 0.447`, roll ≈ 1° (ok).
-   - Also set: `z_min = 0.15`, `min_range = 0.40`.
-   With these, on a still robot the floor leaves the obstacle slice: `front` reads
-   real metres, `clear=True`. Driving + simple avoidance started working here.
-4. **VFH+ node rewritten** (`amr_perception/src/vfh_plus_node.py`, hardened) to add:
-   - **per-frame ground-plane removal** (re-fits floor each scan → robust to the
-     robot pitching during accel/turn; a static z_min was leaking the floor back
-     in as a 0.40 m phantom whenever it moved). Synthetic-tested: floor removed
-     even at ±6° pitch, real wall kept, self-box removes own body.
-   - **self-box filter** (delete robot's own structure): params
-     `self_filter, self_x_min(-0.45), self_x_max(0.45), self_y_abs(0.32)`.
-   - **debug logging**: `[VFH pc] raw/kept/nearest` and `[VFH out] front/min/steer/clear/boxed`.
-   - optional **clean `/front/scan` publisher** (`publish_scan`, default true) — SEE OPEN ISSUE.
-   - Backup of previous node at `amr_perception/src/vfh_plus_node.py.bak`.
+---
 
-## CURRENT BROKEN STATE (what to fix next)
-Attempting to feed AMCL a clean scan from the VFH node BROKE localization:
-- VFH node now publishes `/front/scan`; the user **commented out** the
-  `pointcloud_to_laserscan` (`livox_to_scan`) node in the launch.
-- Result: **AMCL receives no `/front/scan`** ("No laser scan received for 221 s"),
-  so no `map→odom`/`map→base_link`, so the robot does not appear in RViz, 2D Pose
-  Estimate fails, "No transform to fixed frame [map]". Reason VFH's scan isn't
-  reaching AMCL was not diagnosed (likely frame/timing or it isn't actually
-  publishing — `rostopic hz /front/scan` was never checked).
-- Also: Jackal **battery LED flashing yellow** = low battery/fault → can disable
-  motors and cause erratic behaviour. Must charge/swap; check `rostopic echo -n1 /status` (`measured_battery`, stop flags).
+## 1. Project identity (FYP thesis)
 
-## IMMEDIATE PLAN (recovery — revert to known-good scan, keep avoidance win)
-The last instruction given to the user (apply on the Jackal, then relaunch):
+- Title: *"Controlling Unmanned Vehicles Beyond Line of Sight."* BVLOS here means
+  **perception + onboard autonomy** (the robot's lidar replaces the operator's
+  eyes) — **NOT** internet/4G/comms. Don't frame it as a comms project.
+- Platform: Clearpath **Jackal**, ROS1 **Melodic**, **Python 2** onboard.
+- Sensor: **Livox Mid-360** 3D LiDAR, the **only** sensor. Mounted **~38.22° nose-
+  down**, optical centre **0.447 m** up (RANSAC-calibrated; old 45°/0.395 were
+  wrong). **SUPERVISOR REQUIRES the 3D Livox — do NOT use the 2D Hokuyo for
+  navigation** (the Jackal physically has one; it's off-limits except possibly for
+  one-time map-making).
+- Map + AMCL: localises on a pre-built 2D map. The original `dingoMap1` was a
+  **different room/sensor** and never matched — this session the room was
+  **re-mapped with the Livox** (`myroom`). Student does navigation, not SLAM.
+
+---
+
+## 2. THE TWO GOTCHAS THAT COST HOURS — internalise these
+
+1. **TWO separate machines.** The nav stack runs **ON THE ROBOT** (`cpr-j100-0540`,
+   `192.168.1.124`). The **VM** (`192.168.1.109`) only runs **RViz** (and Gazebo
+   sim). `roslaunch amr_jackal_real.launch` must run **on the robot**.
+   - `ROS_MASTER_URI` = **always** `http://192.168.1.124:11311` (roscore is on the
+     robot).
+   - `ROS_IP` = **the machine you're typing on** (`.124` on the robot, `.109` on
+     the VM). Wrong `ROS_IP` → *"Unable to contact my own server."*
+   - **`set_ros_env.sh` auto-sets both correctly** — `source ~/amr_source/set_ros_env.sh`.
+2. **Source-of-truth = git, deployed via symlink.** `~/amr_ws/src/amr_*` are
+   **symlinks** to `~/amr_source/amr_*` (set up once by `link_ws.sh`). So
+   **`git pull` is the ONLY update step** — no `install.sh`, no copy, no rebuild
+   (Python/launch/maps go live immediately). Do NOT re-introduce per-file `scp`.
+
+---
+
+## 3. Networking / hardware facts
+
+| | Value |
+|---|---|
+| Robot host / IP / user | `cpr-j100-0540` / `192.168.1.124` / `administrator` (SSH, password) |
+| VM IP | `192.168.1.109` (RViz + sim) |
+| GitHub remote | `https://github.com/NaimYz1/roobot` (account **NaimYz1**) |
+| Key topics | `/livox/lidar` (PointCloud2), `/livox/imu` (Imu), `/odom`, TF `odom->base_link`, `twist_mux` consumes `/cmd_vel` |
+| Robot bringup | `bash ~/robot_up.sh` → tmux: roscore + base + Livox driver (xfer_format=0) |
+
+Git-auth gotcha seen once: the machine was logged into GitHub as
+`khaifaw650-create` but the repo is `NaimYz1`'s → 403 on push. Fixed by
+`printf 'protocol=https\nhost=github.com\n\n' | git credential reject` then re-auth.
+
+---
+
+## 4. How to run the working system
+
+**One-time per machine:**
 ```bash
-# 0) CHARGE the Jackal battery first (flashing yellow). Verify /status.
-F=~/amr_ws/src/amr_bringup/launch/amr_jackal_real.launch
-# re-enable the pointcloud_to_laserscan node (user had wrapped it in <!-- -->):
-sed -i 's/<!--  <node pkg="pointcloud_to_laserscan"/  <node pkg="pointcloud_to_laserscan"/' $F
-sed -i 's#</node> -->#</node>#' $F
-# stop VFH publishing /front/scan (avoid dual-publisher clash):
-sed -i '/name="min_range"/a\    <param name="publish_scan"     value="false"/>' $F
-# planner uses static map only (floor noise can't cause NO PATH; VFH dodges locally):
-sed -i '/name="use_scan_obstacles"/ s/value="true"/value="false"/' $F
-grep -nE 'pointcloud_to_laserscan|publish_scan|use_scan_obstacles' $F
-roslaunch amr_bringup amr_jackal_real.launch v_max:=0.3
-# verify:  rostopic hz /front/scan  (~10 Hz) ;  rosrun tf tf_echo map base_link (after 2D Pose Estimate)
+cd ~ && git clone https://github.com/NaimYz1/roobot.git amr_source
+bash ~/amr_source/link_ws.sh ~/amr_ws        # robot  (or ~/catkin_ws on the VM)
 ```
-Expected after this: AMCL localizes again (scan from converter; tilt is calibrated
-so `min_height:0.15` already rejects the static floor), robot shows in RViz, 2D
-Pose Estimate + Nav Goal work, VFH+ ground-removal still cleans obstacle avoidance.
-**This recovery has NOT yet been confirmed by the user — verify it first.**
+**Every update after that:** `cd ~/amr_source && git pull`  (that's it).
 
-## OPEN ISSUES / next steps after recovery
-1. **Confirm recovery**: `/front/scan` ~10 Hz, `map→base_link` resolves, robot drives to a goal and dodges a box. Watch `[VFH pc]`/`[VFH out]` WHILE MOVING — floor must stay gone (kept small, no 0.40 m phantom on accel/turn).
-2. **AMCL jumpiness during motion**: the converter scan still has dynamic-pitch
-   floor leak (no per-frame ground removal). Options: (a) raise AMCL
-   `update_min_d/a` already set to 0.05 and `laser_max_beams` 180; (b) properly
-   fix the VFH clean-scan publisher and switch AMCL to it (debug why `/front/scan`
-   from VFH didn't reach AMCL — check `rostopic hz/info`, frame_id `base_link`,
-   timestamp vs `transform_tolerance`).
-3. **Persistent return `~0.9 m @ +131°`** (rear-left, rock-steady bearing): decide
-   if it's the robot's antenna/mast (then set `self_y_abs:=0.55`) or a real wall
-   (leave it; it's behind, doesn't block forward driving).
-4. **Map fidelity**: `dingoMap1` may have been built with a different sensor/height
-   than the tilted Livox; if AMCL never locks well, re-record the map with this Livox.
-5. Tuning already applied: `v_max` 0.3 (slow for testing; knee ~0.8), `a_lat` lower,
-   `d_blend` 2.0, `active_range` 1.4, lookahead raised. `w_max` can be added (~1.2) to slow turning.
-
-## Key debug commands
+**Run (ON THE ROBOT):**
 ```bash
-rostopic hz /livox/lidar /front/scan          # sensors alive?
-rostopic echo -n1 /status                      # battery / e-stop
-rosrun tf tf_echo odom base_link               # odom good? (it is)
-rosrun tf tf_echo map base_link                # AMCL localized?
-rostopic echo /front_distance /stop_flag /vfh_direction
-# VFH debug prints in the roslaunch terminal: [VFH pc] and [VFH out]
+# Terminal 1: base + lidar
+bash ~/robot_up.sh
+# Terminal 2: the nav stack (working defaults baked in)
+bash ~/amr_source/run_real.sh myroom
+#   add a fixed start pose to skip the manual RViz estimate (robot must start there):
+#   bash ~/amr_source/run_real.sh myroom 0.3 x:=5.0 y:=5.5 yaw:=1.9
+```
+**RViz (ON THE VM):**
+```bash
+source ~/amr_source/set_ros_env.sh
+rviz -d $(rospack find amr_bringup)/rviz/amr.rviz
+```
+**Send a goal:** RViz *2D Nav Goal*, **or** by coordinates:
+`bash ~/amr_source/send_goal.sh 3.82 2.31 [yaw_rad]`
+
+**Helper scripts (repo root):** `set_ros_env.sh`, `link_ws.sh`, `map_room.sh`,
+`save_map.sh`, `run_real.sh`, `send_goal.sh`. (`install.sh`/`run.sh` are legacy.)
+
+---
+
+## 5. Architecture / data flow
+
+```
+/livox/lidar (3D, tilted ~38deg) + /livox/imu
+  └─ vfh_plus_node.py:
+       IMU dynamic de-tilt -> ground gate -> self-filter -> log-odds MEMORY grid
+       -> mask STATIC-MAP walls (avoid LIVE obstacles only)
+       -> HARMONIC FIELD (or VFH+)  =>  /vfh_direction /front_distance /stop_flag
+/livox/lidar -> pointcloud_to_laserscan -> /front/scan -> AMCL (localise) [+planner]
+myroom map -> map_server -> AMCL + A* planner
+A* planner (planner_node.py, 1 Hz) -> /global_path
+/global_path + /vfh_direction -> pp_controller_node.py (Pure Pursuit, ARC not pivot)
+  -> /cmd_vel -> twist_mux -> wheels
 ```
 
-## Mental model of the data flow (target architecture)
+The harmonic field is the **steering** source; **VFH+ still runs** to provide
+`front_distance`/`stop_flag` for the controller's emergency brake (safety net).
+
+---
+
+## 6. The harmonic-field local planner (the contribution)
+
+- File: `amr_perception/src/harmonic_logic.py` (`HarmonicField.solve` = sink form,
+  `.solve_flow` = ideal-flow form; both numpy/py2; has a `__main__` self-test).
+  Integrated in `vfh_plus_node.py::compute_harmonic`.
+- Solves **Laplace ∇²φ = 0** on a cropped, down-sampled local occupancy window each
+  cycle via **red-black SOR** (fresh solve, not warm-started — the grid recenters as
+  the robot moves). Steers down **−∇φ**. No interior local minima (max principle).
+- **`harm_mode` (default `hybrid`):**
+  - `flow` — uniform far-field flow toward the goal + obstacles as scatterers
+    (ideal-fluid / Green's-function / "Dirac scattering"). Smooth, but **stagnates
+    head-on** (velocity→0, back-flow).
+  - `sink` — obstacles high, the global-path **carrot** is the low sink. Pulls
+    through gaps but steers wide/discrete.
+  - `hybrid` — flow primary; switch to sink when the flow deviates `> harm_stag_deg`
+    from the goal (stagnation detected). Best of both.
+- **Critical:** the field grid has **static-map walls masked out** (`/map` mask via
+  the map→odom transform) so it only avoids **LIVE/unexpected** obstacles; A\*
+  handles the walls. Without this the field is unstable (deflects around far walls).
+
+---
+
+## 7. Key files
+
+| File | Role |
+|---|---|
+| `amr_perception/src/vfh_plus_node.py` | Perception + local planner node: IMU de-tilt, ground gate, self-filter, memory grid, static-wall masking, VFH+ **and** harmonic. The brain. |
+| `amr_perception/src/harmonic_logic.py` | Harmonic field solver (sink + flow) + self-test |
+| `amr_perception/src/local_grid.py` | Rolling log-odds ego-centric occupancy grid (memory) + self-test |
+| `amr_perception/src/diag_ground.py` | Standalone ground-z diagnostic (validate de-tilt; run on robot) |
+| `amr_perception/src/calibrate_livox.py` | RANSAC floor-fit calibrator (gives mount_pitch/height) |
+| `amr_planning/src/planner_node.py` + `planner_logic.py` | A\* + any-angle smoothing, obstacle memory |
+| `amr_control/src/pp_controller_node.py` + `pp_logic.py` | Pure Pursuit; **arc-not-pivot** logic |
+| `amr_bringup/launch/amr_jackal_real.launch` | The real-robot launch (all params/args) |
+| `amr_bringup/launch/amr_mapping.launch` | gmapping on the Livox flattened scan |
+| `amr_bringup/maps/myroom.{pgm,yaml}` | Map built with the Livox (use this, not dingoMap1) |
+| `amr_bringup/rviz/amr.rviz` | RViz config (PointCloud2 + decay added) |
+
+---
+
+## 8. Tuning params (launch args) — current WORKING values
+
+| Arg | Working value | Meaning / when to change |
+|---|---|---|
+| `local_planner` | `harmonic` | `vfh` = baseline (for the ablation) |
+| `harm_mode` | `hybrid` | `flow`/`sink` force one mechanism |
+| `w_max` | **0.5** | turn rate; 0.5 = wide calm arcs (the key working value) |
+| `rotate_threshold` | **1.8** | turns below this ARC; above pivot. High = car-like |
+| `v_max` | 0.3 | slow so the field keeps up |
+| `d_danger` | 0.55 | controller emergency-brake distance |
+| `use_imu` | `true` | IMU dynamic de-tilt; `imu_gain:=-1` if floor leaks MORE when moving |
+| `z_min` / `z_max` | 0.20 / 1.50 | obstacle height band (0.20 = pitch margin vs floor-leak) |
+| `use_scan_obstacles` | `false` | planner ignores live obstacles (local layer dodges them) |
+| `unknown_is_free` | `false` | bound A\* to the mapped area (fast) |
+| `plan_resolution` | 0.10 | coarser = faster A\* |
+| `grid_decay` | 0.92 | memory persistence; higher hoards floor-leak phantoms |
+| `harm_radius` | 1.5 | local field window (m) |
+| `harm_inflate_cells` | 3 | obstacle inflation; higher = earlier/gentler curve |
+| `harm_smooth` | 0.2 | steering low-pass; lower = smoother but laggier (can drive through!) |
+| `harm_max_dev_deg` | 80 | clamp: steering never deviates more than this from goal |
+| `harm_stag_deg` | 75 | flow deviation that triggers the sink fallback |
+
+---
+
+## 9. The journey — root causes diagnosed & fixed (so you understand WHY)
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| Spins, "no memory", lidar blinks in RViz | single-frame VFH+ on sparse Mid-360; RViz Decay 0 | log-odds memory grid; RViz decay |
+| Mislocalised (white scan ≠ black walls) | `dingoMap1` = different room/sensor | re-mapped with the Livox (`myroom`) |
+| Planning took minutes | A\* explored the whole unknown 992² map | `unknown_is_free=false` + `plan_resolution=0.10` |
+| Past obstacle it spun/reversed | planner re-routed around the dynamic box | `use_scan_obstacles=false`; short `scan_decay` |
+| Harmonic never fired (`harm_dir=--`) | sink placed behind a wall → no connection | sink = global-path carrot |
+| Field swung 80–180° / spin loop | whole-room routing | local window + **mask static walls** |
+| `live` cells explode (0→200) only while moving | **dynamic floor-leak** (motion pitch) | **IMU dynamic de-tilt** + `z_min` margin |
+| Snappy/jerky stop-rotate motion | skid-steer **pivoted** ("tank") each direction change | controller **arcs forward**; pivot only boxed/reversal |
+
+---
+
+## 10. Key findings (thesis novelty)
+
+1. A field method must see **only live obstacles**, not static walls A\* already
+   routes around — masking the static map was the biggest stability win.
+2. **Ideal-flow stagnates head-on** → a **hybrid flow+sink** (sink on detected
+   stagnation) is the robust form.
+3. The platform's **kinematics matter as much as the field** — a skid-steer that
+   *pivots* looks erratic; commanding **forward arcs** makes the same field smooth.
+4. **Tilted-LiDAR floor-leak is static-clean but dynamic-dirty** — needs IMU
+   live-pitch de-tilt under motion.
+5. **Localisation is only as good as map–sensor consistency** — rebuild the map
+   with the deployment sensor.
+
+---
+
+## 11. Known limitations (state these honestly in the thesis)
+
+- Close-range blind zone (min-range + self-filter): obstacles vanish < ~0.45 m;
+  bridged by short-term memory.
+- Ramp transitions cause brief IMU de-tilt transients (flat routes most reliable).
+- SOR solve adds latency → run slow (0.3 m/s).
+- "No local minima" is **continuum-only** (saddle points remain); the field is a
+  *local* layer, A\* gives the global route. Never claim global optimality.
+- Validated in one mapped environment; single-LiDAR, pre-built-map scope.
+- **scikit-fmm is Python-3 only** → FM2/Eikonal is an *offline* comparison, not onboard.
+
+---
+
+## 12. What's next (priority order)
+
+1. **Careful remap** of the room (`map_room.sh` → drive slowly, hug every wall,
+   rotate at corners, close the loop → `save_map.sh myroom2`). Cleaner localisation.
+2. **Formal ablation** = Chapter 4: same scripted goals (`send_goal.sh`) with
+   `local_planner:=vfh` (baseline) vs `:=harmonic`. Record video + the `[HARM]`/`NAV`
+   logs. Metrics (offline from a rosbag): success, oscillation/heading-sign-flips,
+   time-to-goal, path smoothness/curvature, min clearance.
+3. **FM2 offline** (`tools/fm2_offline.py`, py3 + scikit-fmm on a logged map) — the
+   HJB/Eikonal comparison, delivered off-robot (not yet built).
+4. **Thesis writeup** — material is in `Desktop\src\FYP …\SESSION_SUMMARY_for_thesis.md`.
+
+---
+
+## 13. Debug / diagnostics
+
+```bash
+# the [HARM] log line (in the run_real terminal, harmonic mode):
+#   harm_dir = field steering angle (-- = field returned None -> VFH fallback)
+#   grid_occ = all cells (walls+box) ; live = LIVE cells after wall masking (should be
+#              ~0 in open space, a few dozen with a box; explodes => floor-leak)
+#   imu = live de-tilt correction (hand-tilt the robot -> should change a few deg)
+#   front = collision-corridor clearance ; boxed = VFH "boxed in" flag
+rosrun tf tf_echo map base_link        # AMCL localised? (after 2D Pose Estimate)
+rostopic echo /global_path -n1 | head  # is a path published?
+rostopic hz /front/scan /livox/lidar   # sensors alive (~10 Hz)
+python ~/amr_source/amr_perception/src/diag_ground.py   # validate ground de-tilt (robot still)
 ```
-/livox/lidar (PointCloud2, tilted 38° down)
-  -> vfh_plus_node: rotate to base, per-frame ground removal + self-box
-       -> /vfh_direction /min_distance /front_distance /stop_flag   (avoidance)
-       -> (optionally) clean /front/scan                             (BROKEN — reverted)
-  -> pointcloud_to_laserscan -> /front/scan -> AMCL + (planner)      (current recovery path)
-/map -> planner_node (A*) -> /global_path
-/global_path + VFH topics -> pp_controller_node -> /cmd_vel -> twist_mux -> wheels
-```
-The single biggest recurring trap: this is a **downward-tilted lidar staring at the
-floor**, so any miscalibration or dynamic pitch dumps thousands of floor points into
-the obstacle slice and the robot spins/boxes-in. Always sanity-check with
-`[VFH pc] kept=` (should be small on open floor) and re-run `calibrate_livox.py`
-if geometry is ever in doubt.
-```
+
+---
+
+## 14. Where things live (outside this repo)
+
+- **Approved plan:** `C:\Users\kfaww\.claude\plans\okay-we-need-to-sunny-duckling.md`
+- **Thesis summary (this session):** `Desktop\src\FYP  Controlling unmanned vehicles beyond line of sight\SESSION_SUMMARY_for_thesis.md`
+- **Thesis ground-truth briefing + Ch.2:** same FYP folder.
+- **Research (citations + fact-checks of harmonic/FM2/flow claims):** background
+  workflow output `w7e607v81` (transcript dir) — for the lit review.
+- **Auto-memory** (loads each session): `amr-dev-workflow.md`, `amr-nav-diagnosis-and-method.md`.
+
+---
+
+## 15. Conventions for whoever continues
+
+- Edit on Windows → commit (LF enforced) → push → `git pull` on robot/VM. Never scp.
+- Test changes on the **robot** (real) or the **VM** (Gazebo sim via `run.sh`).
+- `headless_test.py` runs planner+VFH+controller offline on the map (should pass).
+- Keep claims honest: **no "globally optimal", no "no local minima" unqualified.**
+- Commit messages end with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
