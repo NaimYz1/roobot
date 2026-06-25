@@ -67,6 +67,10 @@
        old single-frame behaviour:  local_grid:=false ground_mode:=lsq -->
   <arg name="local_grid"  default="true"/>
   <arg name="ground_mode" default="gate"/>
+  <!-- local planner: 'vfh' (gap histogram, the baseline) or 'harmonic'
+       (Laplace/Dirac field on the memory grid; smooth, no gap-oscillation,
+       no interior local minima - the featured contribution). A/B from CLI. -->
+  <arg name="local_planner" default="vfh"/>
 
   <!-- planner: use live /front/scan obstacles (true) or static map ONLY (false).
        false => VFH does ALL live dodging; use it to rule out phantom scan
@@ -207,6 +211,7 @@
          (and ground_mode:=lsq) to get the exact old single-frame behaviour. -->
     <param name="ground_mode"      value="$(arg ground_mode)"/>
     <param name="local_grid"       value="$(arg local_grid)"/>
+    <param name="local_planner"    value="$(arg local_planner)"/>
     <param name="grid_decay"       value="0.92"/>
     <param name="grid_occ_thresh"  value="1.0"/>
     <!-- AMCL's scan comes from livox_to_scan; the node must NOT also publish

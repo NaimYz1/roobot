@@ -33,6 +33,7 @@ import sensor_msgs.point_cloud2 as pc2
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vfh_logic import VFHPlus, ang_diff
 from local_grid import LocalGrid
+from harmonic_logic import HarmonicField
 
 from sensor_msgs.msg import PointCloud2, LaserScan
 from nav_msgs.msg import Path
@@ -86,10 +87,16 @@ class VFHPlusNode(object):
         self.base_frame = rospy.get_param('~base_frame', 'base_link')
         self._accum = []   # list of (t_sec, xo_array, yo_array) in odom frame
 
+        # --- local planner: 'vfh' (gap histogram) or 'harmonic' (Laplace field;
+        # smooth, no gap-to-gap oscillation, no interior local minima). The
+        # harmonic field solves on the memory grid, so it forces the grid on. ---
+        self.local_planner = rospy.get_param('~local_planner', 'vfh')
+
         # --- short-term local MEMORY: decaying log-odds occupancy grid in the
-        # odom frame (cures single-frame flicker/spin; what the harmonic field
-        # will later solve on). OFF by default; enabled via ~local_grid. ---
-        self.use_grid = rospy.get_param('~local_grid', False)
+        # odom frame (cures single-frame flicker/spin; harmonic solves on it).
+        # enabled via ~local_grid, or implicitly when local_planner=harmonic. ---
+        self.use_grid = (rospy.get_param('~local_grid', False)
+                         or self.local_planner == 'harmonic')
         self.grid = None
         if self.use_grid:
             self.grid = LocalGrid(
@@ -99,6 +106,15 @@ class VFHPlusNode(object):
                 l_hit=rospy.get_param('~grid_l_hit', 0.7),
                 occ_thresh=rospy.get_param('~grid_occ_thresh', 1.0),
                 min_pts=int(rospy.get_param('~grid_min_pts', 2)))
+
+        # --- harmonic (Laplace) field local planner ---
+        self.harm = None
+        self._harm_dir = None
+        if self.local_planner == 'harmonic':
+            self.harm = HarmonicField(
+                omega=rospy.get_param('~harm_omega', 1.9),
+                iters=int(rospy.get_param('~harm_iters', 140)),
+                inflate_cells=int(rospy.get_param('~harm_inflate_cells', 3)))
 
         # --- cluster / density filter (reject isolated specks) ---
         self.front_debug = rospy.get_param('~front_debug', False)
@@ -138,13 +154,13 @@ class VFHPlusNode(object):
                          queue_size=1)
 
         self.detect_sensor()
-        rospy.loginfo("=== VFH+ NODE STARTED | Mode: %s | pitch=%.2fdeg "
-                      "h=%.3fm ground=%s/%s self=%s accum=%s grid=%s "
+        rospy.loginfo("=== VFH+ NODE STARTED | Mode: %s | planner=%s | "
+                      "pitch=%.2fdeg h=%.3fm ground=%s/%s self=%s grid=%s "
                       "clean_scan=%s ===",
-                      self.sensor_mode, math.degrees(self.mount_pitch),
-                      self.mount_z, self.ground_filter, self.ground_mode,
-                      self.self_filter, self.accumulate, self.use_grid,
-                      self.publish_scan)
+                      self.sensor_mode, self.local_planner,
+                      math.degrees(self.mount_pitch), self.mount_z,
+                      self.ground_filter, self.ground_mode, self.self_filter,
+                      self.use_grid, self.publish_scan)
 
     # ------------------------------------------------------------------
     def detect_sensor(self):
@@ -212,6 +228,29 @@ class VFHPlusNode(object):
                 break
         tx, ty = pts[j]
         return ang_diff(math.atan2(ty - y, tx - x), yaw)
+
+    def compute_harmonic(self, od):
+        """Harmonic-field steering: solve Laplace on the memory grid with a
+        goal-direction border SINK, return the base-frame descent angle (the
+        smooth flow-around-obstacles direction). None if the field is flat
+        (boxed/saddle) -> the controller rotates out via the VFH boxed path."""
+        if self.grid is None or self.harm is None or self.grid.cx is None:
+            return None
+        occ = self.grid.L > self.grid.occ_thresh
+        # max-pool 2x for a fast solve (memory grid stays at full res for VFH)
+        m = occ.shape[0] - (occ.shape[0] % 2)
+        occ = occ[:m, :m].reshape(m // 2, 2, m // 2, 2).max(axis=(1, 3))
+        half = occ.shape[0] // 2
+        _, _, th = od
+        goal_odom = th + self.target_angle()        # goal direction in odom
+        R = half - 1
+        c, s = math.cos(goal_odom), math.sin(goal_odom)
+        t = R / max(abs(c), abs(s), 1e-6)
+        sink = (int(round(half + t * s)), int(round(half + t * c)))  # (iy, ix)
+        ang_grid, _ = self.harm.solve(occ, sink, (half, half))
+        if ang_grid is None:
+            return None
+        return ang_diff(ang_grid - th, 0.0)          # odom angle -> base frame
 
     # ------------------------------------------------------------------
     def scan_callback(self, msg):
@@ -344,6 +383,10 @@ class VFHPlusNode(object):
             self._accum = []          # no TF -> single frame, no smear
             xb2, yb2 = xbk, ybk
 
+        if self.local_planner == 'harmonic':
+            self._harm_dir = (self.compute_harmonic(od)
+                              if od is not None else None)
+
         a_keep = np.arctan2(yb2, xb2)
         r_keep = np.hypot(xb2, yb2)
 
@@ -397,6 +440,11 @@ class VFHPlusNode(object):
 
         direction = res['direction']
         boxed_in = res.get('boxed', direction is None)
+        # harmonic mode: VFH still gives front/min distance + boxed (safety),
+        # but the SMOOTH harmonic descent gives the steering direction.
+        if (self.local_planner == 'harmonic' and self._harm_dir is not None
+                and not boxed_in):
+            direction = self._harm_dir
 
         self.dir_pub.publish(Float32(
             data=0.0 if direction is None else float(direction)))
