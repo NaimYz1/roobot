@@ -110,11 +110,14 @@ class VFHPlusNode(object):
         # --- harmonic (Laplace) field local planner ---
         self.harm = None
         self._harm_dir = None
+        self._harm_filt = None
+        self.harm_ds = int(rospy.get_param('~harm_downsample', 3))
+        self.harm_lp = rospy.get_param('~harm_smooth', 0.4)   # 0..1 per frame
         if self.local_planner == 'harmonic':
             self.harm = HarmonicField(
                 omega=rospy.get_param('~harm_omega', 1.9),
-                iters=int(rospy.get_param('~harm_iters', 140)),
-                inflate_cells=int(rospy.get_param('~harm_inflate_cells', 3)))
+                iters=int(rospy.get_param('~harm_iters', 220)),
+                inflate_cells=int(rospy.get_param('~harm_inflate_cells', 4)))
 
         # --- cluster / density filter (reject isolated specks) ---
         self.front_debug = rospy.get_param('~front_debug', False)
@@ -237,9 +240,10 @@ class VFHPlusNode(object):
         if self.grid is None or self.harm is None or self.grid.cx is None:
             return None
         occ = self.grid.L > self.grid.occ_thresh
-        # max-pool 2x for a fast solve (memory grid stays at full res for VFH)
-        m = occ.shape[0] - (occ.shape[0] % 2)
-        occ = occ[:m, :m].reshape(m // 2, 2, m // 2, 2).max(axis=(1, 3))
+        # max-pool by harm_ds for a fast solve (memory grid stays full-res for VFH)
+        ds = self.harm_ds
+        m = occ.shape[0] - (occ.shape[0] % ds)
+        occ = occ[:m, :m].reshape(m // ds, ds, m // ds, ds).max(axis=(1, 3))
         half = occ.shape[0] // 2
         _, _, th = od
         goal_odom = th + self.target_angle()        # goal direction in odom
@@ -250,7 +254,15 @@ class VFHPlusNode(object):
         ang_grid, _ = self.harm.solve(occ, sink, (half, half))
         if ang_grid is None:
             return None
-        return ang_diff(ang_grid - th, 0.0)          # odom angle -> base frame
+        new = ang_diff(ang_grid - th, 0.0)          # odom angle -> base frame
+        # low-pass the steering direction to kill frame-to-frame jitter -> no spin
+        if self._harm_filt is None:
+            self._harm_filt = new
+        else:
+            self._harm_filt = ang_diff(
+                self._harm_filt + self.harm_lp * ang_diff(new, self._harm_filt),
+                0.0)
+        return self._harm_filt
 
     # ------------------------------------------------------------------
     def scan_callback(self, msg):

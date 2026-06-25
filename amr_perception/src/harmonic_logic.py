@@ -70,9 +70,10 @@ class HarmonicField(object):
         None => field is flat at the robot (boxed / saddle) -> rotate out."""
         H, W = occ.shape
         occ = inflate(occ, self.inflate_cells)
-        if self.phi is None or self.phi.shape != (H, W):
-            self.phi = np.full((H, W), 0.5, dtype=np.float64)
-        phi = self.phi
+        # fresh field each solve: the memory grid recenters as the robot moves,
+        # so a persisted phi would be spatially MISALIGNED with the shifted occ
+        # grid -> noisy gradient -> steering jitter. Re-solve from scratch.
+        phi = np.full((H, W), 0.5, dtype=np.float64)
 
         fixed = occ.copy()
         phi[occ] = 1.0
