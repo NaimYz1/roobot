@@ -68,6 +68,14 @@
   <arg name="local_grid"  default="true"/>
   <arg name="ground_mode" default="gate"/>
 
+  <!-- planner: use live /front/scan obstacles (true) or static map ONLY (false).
+       false => VFH does ALL live dodging; use it to rule out phantom scan
+       obstacles (floor leak during motion) corrupting the global path. -->
+  <arg name="use_scan_obstacles" default="true"/>
+  <!-- controller: distance (m) where avoidance fully takes over / e-brakes.
+       raise (e.g. 0.7) to react to obstacles earlier and not clip them. -->
+  <arg name="d_danger" default="0.55"/>
+
   <arg name="rviz" default="false"/>
 
   <!-- ====================== LIVOX DRIVER (optional) ====================== -->
@@ -142,7 +150,7 @@
     <param name="plan_resolution"    value="0.05"/>
     <param name="replan_period"      value="1.0"/>
     <param name="heuristic_weight"   value="1.2"/>
-    <param name="use_scan_obstacles" value="true"/>
+    <param name="use_scan_obstacles" value="$(arg use_scan_obstacles)"/>
     <!-- scan_decay = max UNSEEN age of a remembered obstacle. Obstacles
          are forgotten when the lidar sees PAST their spot (evidence),
          this only ages out ones that left while unobserved -->
@@ -193,7 +201,7 @@
     <param name="a_lat"          value="0.9"/>
     <param name="lookahead_gain" value="0.9"/>
     <param name="goal_radius"    value="0.15"/>
-    <param name="d_danger"       value="0.55"/>
+    <param name="d_danger"       value="$(arg d_danger)"/>
     <param name="d_blend"        value="1.5"/>
   </node>
 
